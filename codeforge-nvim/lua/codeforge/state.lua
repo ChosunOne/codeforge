@@ -2,9 +2,20 @@ local M = {}
 
 M.changes = {}
 M.current_change_id = nil
+M.current_change_index = nil
 M.expanded_files = {}
 M.selected_path = nil
 M.last_view_state = nil
+M._on_change = nil
+
+function M.reset()
+	M.changes = {}
+	M.current_change_id = nil
+	M.current_change_index = nil
+	M.expanded_files = {}
+	M.selected_path = nil
+	M.last_view_state = nil
+end
 
 ---@class Change
 ---@field id string
@@ -28,6 +39,12 @@ M.last_view_state = nil
 ---@field lines string[]
 ---@field status string
 ---@field modified_content string|nil
+
+-- Set a callback for when state changes
+---@param callback function
+function M.set_on_change(callback)
+	M._on_change = callback
+end
 
 -- Get all changes
 function M.get_changes()

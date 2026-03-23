@@ -13,8 +13,9 @@ function M.setup(opts)
 	M.state = require("codeforge.state")
 
 	local dapui = require("dapui")
-	local element = require("codeforge.sidebar.element")
-	dapui.register_element("codeforge", element())
+	local element, refresh = require("codeforge.sidebar.element")()
+	dapui.register_element("codeforge", element)
+	M.state.set_on_change(refresh)
 
 	dapui.setup({
 		layouts = {
