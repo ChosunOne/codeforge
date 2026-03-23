@@ -10,6 +10,7 @@ function M.setup(opts)
 	M._initialized = true
 	opts = opts or {}
 	M.config = vim.tbl_extend("force", M.config, opts)
+	M.state = require("codeforge.state")
 
 	local dapui = require("dapui")
 	local element = require("codeforge.sidebar.element")
