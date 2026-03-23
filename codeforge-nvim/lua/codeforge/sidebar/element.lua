@@ -1,5 +1,6 @@
 local Canvas = require("dapui.render.canvas")
 local util = require("dapui.util")
+local config = require("dapui.config")
 
 return function()
 	local element = {
@@ -12,7 +13,7 @@ return function()
 		canvas:write("\n")
 		canvas:write("No pending changes\n")
 
-		canvas:render_buffer(element.buffer(), {})
+		canvas:render_buffer(element.buffer(), config.mappings)
 	end
 
 	element.buffer = util.create_buffer("CodeForge", {
