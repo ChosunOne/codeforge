@@ -54,13 +54,13 @@ end
 -- Get current change
 ---@return Change|nil
 function M.get_current_change()
-	return nil
+	return M.changes[M.current_change_index]
 end
 
 -- Get index of current change
 ---@return number
 function M.get_change_index()
-	return 0
+	return M.current_change_index or 0
 end
 
 function M.next_change() end

@@ -13,9 +13,18 @@ return function()
 
 	function element.render()
 		local canvas = Canvas.new()
-		canvas:write("CodeForge - Pending Review Panel\n")
-		canvas:write("\n")
-		canvas:write("No pending changes\n")
+		local state = require("codeforge.state")
+		local change = state.get_current_change()
+
+		if change then
+			local index = state.get_change_index()
+			local total = #state.get_changes()
+			canvas:write(string.format("[%d/%d] %s\n", index, total, change.title))
+		else
+			canvas:write("CodeForge - Pending Review Panel\n")
+			canvas:write("\n")
+			canvas:write("No pending changes\n")
+		end
 
 		canvas:render_buffer(element.buffer(), config.mappings)
 	end
