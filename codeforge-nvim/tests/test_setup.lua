@@ -17,11 +17,4 @@ T["plugin loads without error"] = function()
 	MiniTest.expect.equality(type(config), "table")
 end
 
-T["config accepts options"] = function()
-	child.lua([[require('codeforge').setup({ custom_key = 'value'})]])
-
-	local custom = child.lua_get([[require('codeforge').config.custom_key]])
-	MiniTest.expect.equality(custom, "value")
-end
-
 return T

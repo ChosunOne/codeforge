@@ -1,8 +1,13 @@
 local M = {}
 
 M.config = {}
+M._initialized = false
 
 function M.setup(opts)
+	if M._initialized then
+		return
+	end
+	M._initialized = true
 	opts = opts or {}
 	M.config = vim.tbl_extend("force", M.config, opts)
 
