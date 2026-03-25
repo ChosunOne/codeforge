@@ -1,6 +1,11 @@
 local M = {}
 
-M.config = {}
+M.config = {
+	keymaps = {
+		next_change = "<C-]>",
+		prev_change = "<C-[>",
+	},
+}
 M._initialized = false
 
 function M.setup(opts)
@@ -13,10 +18,6 @@ function M.setup(opts)
 	M.state = require("codeforge.state")
 
 	local dapui = require("dapui")
-	local element, refresh = require("codeforge.sidebar.element")()
-	dapui.register_element("codeforge", element)
-	M.state.set_on_change(refresh)
-
 	dapui.setup({
 		layouts = {
 			{
@@ -28,9 +29,21 @@ function M.setup(opts)
 			},
 		},
 	})
+	local element, refresh = require("codeforge.sidebar.element")(M.config)
+	dapui.register_element("codeforge", element)
+	M.state.set_on_change(refresh)
 
 	vim.api.nvim_create_user_command("CodeForge", function()
 		dapui.toggle({ layout = 1 })
+		local wins = vim.api.nvim_list_wins()
+		for _, win in ipairs(wins) do
+			local buf = vim.api.nvim_win_get_buf(win)
+			local name = vim.api.nvim_buf_get_name(buf)
+			if name:match("CodeForge") then
+				vim.api.nvim_set_current_win(win)
+				break
+			end
+		end
 	end, { desc = "Toggle CodeForge sidebar" })
 end
 

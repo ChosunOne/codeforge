@@ -63,8 +63,42 @@ function M.get_change_index()
 	return M.current_change_index or 0
 end
 
-function M.next_change() end
-function M.prev_change() end
+-- Select the next change
+function M.next_change()
+	if #M.changes == 0 then
+		return
+	end
+
+	M.current_change_index = math.max((M.current_change_index + 1) % (#M.changes + 1), 1)
+
+	local change = M.get_current_change()
+	if change then
+		M.current_change_id = change.id
+	end
+
+	if M._on_change then
+		M._on_change()
+	end
+end
+function M.prev_change()
+	if #M.changes == 0 then
+		return
+	end
+
+	M.current_change_index = M.current_change_index - 1
+	if M.current_change_index <= 0 then
+		M.current_change_index = #M.changes
+	end
+
+	local change = M.get_current_change()
+	if change then
+		M.current_change_id = change.id
+	end
+
+	if M._on_change then
+		M._on_change()
+	end
+end
 
 ---@param id string
 function M.select_change(id) end

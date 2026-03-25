@@ -2,18 +2,45 @@ local Canvas = require("dapui.render.canvas")
 local util = require("dapui.util")
 local config = require("dapui.config")
 
-return function()
+return function(user_config)
 	local element = {
 		allow_without_session = true,
 	}
+
+	local u_config = user_config or {}
+
+	local state = require("codeforge.state")
 
 	local send_ready = util.create_render_loop(function()
 		element.render()
 	end)
 
+	local function setup_keymaps()
+		local buf = element.buffer()
+		if not buf or not vim.api.nvim_buf_is_valid(buf) then
+			return
+		end
+
+		if u_config.keymaps and u_config.keymaps.next_change then
+			vim.keymap.set("n", u_config.keymaps.next_change, function()
+				state.next_change()
+			end, {
+				buf = buf,
+				silent = true,
+				desc = "CodeForge: Next change",
+			})
+			vim.keymap.set("n", u_config.keymaps.prev_change, function()
+				state.prev_change()
+			end, {
+				buf = buf,
+				silent = true,
+				desc = "CodeForge: Previous change",
+			})
+		end
+	end
+
 	function element.render()
 		local canvas = Canvas.new()
-		local state = require("codeforge.state")
 		local change = state.get_current_change()
 
 		if change then
@@ -26,7 +53,9 @@ return function()
 			canvas:write("No pending changes\n")
 		end
 
-		canvas:render_buffer(element.buffer(), config.mappings)
+		canvas:render_buffer(element.buffer(), config.element_mapping("codeforge"))
+
+		setup_keymaps()
 	end
 
 	element.buffer = util.create_buffer("CodeForge", {
