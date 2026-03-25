@@ -17,6 +17,11 @@ function M.reset()
 	M.last_view_state = nil
 end
 
+---@alias Status
+---| "'added'"
+---| "'modified'"
+---| "'deleted'"
+
 ---@class Change
 ---@field id string
 ---@field title string
@@ -26,7 +31,7 @@ end
 
 ---@class File
 ---@field path string
----@field status string
+---@field status Status
 ---@field hunks Hunk[]
 
 ---@class Hunk
@@ -37,7 +42,7 @@ end
 ---@field new_start number
 ---@field new_lines number
 ---@field lines string[]
----@field status string
+---@field status Status
 ---@field modified_content string|nil
 
 -- Set a callback for when state changes

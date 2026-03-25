@@ -46,7 +46,20 @@ return function(user_config)
 		if change then
 			local index = state.get_change_index()
 			local total = #state.get_changes()
-			canvas:write(string.format("[%d/%d] %s\n", index, total, change.title))
+			canvas:write(string.format("[%d/%d] %s\n\n", index, total, change.title))
+
+			if change.files and #change.files > 0 then
+				for _, file in ipairs(change.files) do
+					local is_modified = file.status == "modified"
+					local status_upper = file.status:upper():sub(1, 1)
+
+					if is_modified then
+						canvas:write(string.format("▸ %s [%s]\n", file.path, status_upper))
+					else
+						canvas:write(string.format("  %s [%s]\n", file.path, status_upper))
+					end
+				end
+			end
 		else
 			canvas:write("CodeForge - Pending Review Panel\n")
 			canvas:write("\n")

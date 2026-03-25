@@ -43,32 +43,32 @@ T["sidebar displays files in change"] = function()
 		fail_reason = "Got " .. lines[1],
 	})
 
-	MiniTest.expect.equality(string.find(lines[2], "▸ src/auth.lua %[M%]") ~= nil, true, {
-		fail_reason = "Got " .. lines[2],
-	})
-
-	MiniTest.expect.equality(string.find(lines[3], "^src/middleware.lua %[A%]$") ~= nil, true, {
+	MiniTest.expect.equality(string.find(lines[3], "▸ src/auth.lua %[M%]") ~= nil, true, {
 		fail_reason = "Got " .. lines[3],
 	})
 
-	MiniTest.expect.equality(string.find(lines[3], "[▸▾]") == nil, true, { fail_reason = "Got " .. lines[3] })
+	MiniTest.expect.equality(string.find(lines[4], "^  src/middleware.lua %[A%]$") ~= nil, true, {
+		fail_reason = "Got " .. lines[4],
+	})
 
-	MiniTest.expect.equality(
-		string.find(lines[4], "^tests/auth_test.lua %[A%]$") ~= nil,
-		true,
-		{ fail_reason = "Got " .. lines[4] }
-	)
 	MiniTest.expect.equality(string.find(lines[4], "[▸▾]") == nil, true, { fail_reason = "Got " .. lines[4] })
 
 	MiniTest.expect.equality(
-		string.find(lines[5], "^src/old_auth.lua %[D%]$") ~= nil,
+		string.find(lines[5], "^  tests/auth_test.lua %[A%]$") ~= nil,
 		true,
 		{ fail_reason = "Got " .. lines[5] }
 	)
-
 	MiniTest.expect.equality(string.find(lines[5], "[▸▾]") == nil, true, { fail_reason = "Got " .. lines[5] })
 
-	MiniTest.expect.equality(#lines, 5, { fail_reason = "Should have exactly 5 lines" })
+	MiniTest.expect.equality(
+		string.find(lines[6], "^  src/old_auth.lua %[D%]$") ~= nil,
+		true,
+		{ fail_reason = "Got " .. lines[6] }
+	)
+
+	MiniTest.expect.equality(string.find(lines[6], "[▸▾]") == nil, true, { fail_reason = "Got " .. lines[6] })
+
+	MiniTest.expect.equality(#lines, 7, { fail_reason = "Should have exactly 7 lines" })
 	MiniTest.expect.reference_screenshot(child.get_screenshot())
 end
 
