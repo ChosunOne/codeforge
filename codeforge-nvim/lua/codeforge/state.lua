@@ -85,6 +85,8 @@ function M.next_change()
 		M._on_change()
 	end
 end
+
+-- Select the previous change
 function M.prev_change()
 	if #M.changes == 0 then
 		return
@@ -108,14 +110,38 @@ end
 ---@param id string
 function M.select_change(id) end
 
+-- Returns whether a file's hunks are expanded
 ---@param file_path string
 ---@return boolean
 function M.is_expanded(file_path)
-	return false
+	local change = M.get_current_change()
+	if not change then
+		return false
+	end
+
+	local change_expanded = M.expanded_files[change.id] or {}
+	return change_expanded[file_path] or false
 end
 
+-- Toggles whether a file's hunks should be expanded
 ---@param file_path string
-function M.toggle_file(file_path) end
+function M.toggle_file(file_path)
+	local change = M.get_current_change()
+	if not change then
+		return
+	end
+
+	if not M.expanded_files[change.id] then
+		M.expanded_files[change.id] = {}
+	end
+
+	local current = M.expanded_files[change.id][file_path] or false
+	M.expanded_files[change.id][file_path] = not current
+
+	if M._on_change then
+		M._on_change()
+	end
+end
 
 ---@param file_path string
 function M.expand_file(file_path) end

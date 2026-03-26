@@ -72,4 +72,57 @@ T["sidebar displays files in change"] = function()
 	MiniTest.expect.reference_screenshot(child.get_screenshot())
 end
 
+T["expanding a modified file should display hunks"] = function()
+	child.lua([[
+		local state = require("codeforge.state")
+		state.changes = {
+			{
+				id = "change-001",
+				title = "Test",
+				files = {
+					{
+						path = "src/file.lua",
+						status = "modified",
+						hunks = {
+							{ 
+								id = "hunk-001", 
+								description = "Add login function",
+								new_start = 0,
+								status = "modified"
+							}
+						}
+					}
+				}
+			}
+		}
+		state.current_change_index = 1
+		state.current_change_id = "change-001"
+	]])
+
+	child.cmd("CodeForge")
+
+	child.type_keys("3gg")
+
+	child.type_keys("o")
+
+	MiniTest.expect.reference_screenshot(child.get_screenshot())
+
+	local wins = child.api.nvim_list_wins()
+	local sidebar_win = wins[#wins]
+	local buf = child.api.nvim_win_get_buf(sidebar_win)
+	local lines = child.api.nvim_buf_get_lines(buf, 0, -1, false)
+
+	MiniTest.expect.equality(
+		string.find(lines[3], "▾ src/file.lua %[M%]") ~= nil,
+		true,
+		{ fail_reason = "Got " .. lines[3] }
+	)
+
+	MiniTest.expect.equality(
+		string.find(lines[4], "Add login function") ~= nil,
+		true,
+		{ fail_reason = "Got " .. (lines[4] or nil) }
+	)
+end
+
 return T

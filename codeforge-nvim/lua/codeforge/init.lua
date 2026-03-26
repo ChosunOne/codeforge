@@ -4,6 +4,7 @@ M.config = {
 	keymaps = {
 		next_change = "<C-]>",
 		prev_change = "<C-[>",
+		toggle_file = "o",
 	},
 }
 M._initialized = false
@@ -27,6 +28,9 @@ function M.setup(opts)
 				size = 40,
 				position = "right",
 			},
+		},
+		mappings = {
+			open = "o",
 		},
 	})
 	local element, refresh = require("codeforge.sidebar.element")(M.config)

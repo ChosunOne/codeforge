@@ -47,16 +47,40 @@ return function(user_config)
 			local index = state.get_change_index()
 			local total = #state.get_changes()
 			canvas:write(string.format("[%d/%d] %s\n\n", index, total, change.title))
+			local current_line = 3
 
 			if change.files and #change.files > 0 then
 				for _, file in ipairs(change.files) do
 					local is_modified = file.status == "modified"
+					local is_expanded = state.is_expanded(file.path)
 					local status_upper = file.status:upper():sub(1, 1)
 
 					if is_modified then
-						canvas:write(string.format("▸ %s [%s]\n", file.path, status_upper))
+						local indicator = is_expanded and "▾" or "▸"
+						canvas:write(string.format("%s %s [%s]\n", indicator, file.path, status_upper))
+						canvas:add_mapping("open", function()
+							state.toggle_file(file.path)
+						end, { line = current_line })
+
+						current_line = current_line + 1
+
+						if is_expanded and file.hunks and #file.hunks > 0 then
+							for _, hunk in ipairs(file.hunks) do
+								local hunk_status_upper = hunk.status:upper():sub(1, 1)
+								canvas:write(
+									string.format(
+										"    L%d %s [%s]\n",
+										hunk.new_start,
+										hunk.description,
+										hunk_status_upper
+									)
+								)
+								current_line = current_line + 1
+							end
+						end
 					else
 						canvas:write(string.format("  %s [%s]\n", file.path, status_upper))
+						current_line = current_line + 1
 					end
 				end
 			end
