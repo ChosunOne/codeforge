@@ -70,14 +70,11 @@ return function(user_config)
 						if is_expanded and file.hunks and #file.hunks > 0 then
 							for _, hunk in ipairs(file.hunks) do
 								local hunk_status_upper = hunk.status:upper():sub(1, 1)
-								canvas:write(
-									string.format(
-										"    L%d %s [%s]\n",
-										hunk.new_start,
-										hunk.description,
-										hunk_status_upper
-									)
-								)
+								canvas:write("    ")
+								canvas:write("L" .. hunk.new_start .. " ")
+								canvas:write(hunk.description .. " ")
+								local status_hl = require("codeforge.highlight").get_status_hl(hunk.status, true)
+								canvas:write("[" .. hunk_status_upper .. "]\n", { group = status_hl })
 								current_line = current_line + 1
 							end
 						end
