@@ -14,6 +14,7 @@ function M.setup(opts)
 		return
 	end
 	M._initialized = true
+	require("codeforge.highlight").setup()
 	opts = opts or {}
 	M.config = vim.tbl_extend("force", M.config, opts)
 	M.state = require("codeforge.state")

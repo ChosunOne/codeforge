@@ -57,7 +57,10 @@ return function(user_config)
 
 					if is_modified then
 						local indicator = is_expanded and "▾" or "▸"
-						canvas:write(string.format("%s %s [%s]\n", indicator, file.path, status_upper))
+						canvas:write(indicator .. " ")
+						canvas:write(file.path .. " ", { group = "CodeForgeFile" })
+						local status_hl = require("codeforge.highlight").get_status_hl(file.status, false)
+						canvas:write("[" .. status_upper .. "]\n", { group = status_hl })
 						canvas:add_mapping("open", function()
 							state.toggle_file(file.path)
 						end, { line = current_line })
@@ -79,7 +82,11 @@ return function(user_config)
 							end
 						end
 					else
-						canvas:write(string.format("  %s [%s]\n", file.path, status_upper))
+						canvas:write("  ")
+						canvas:write(file.path, { group = "CodeForgeFile" })
+						local status_hl = require("codeforge.highlight").get_status_hl(file.status, false)
+						canvas:write(" ")
+						canvas:write("[" .. status_upper .. "]\n", { group = status_hl })
 						current_line = current_line + 1
 					end
 				end
