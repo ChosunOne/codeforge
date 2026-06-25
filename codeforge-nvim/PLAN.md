@@ -12,7 +12,7 @@
          │ (Unix/Windows)            │
          │                           │
 ┌────────▼───────────────────────────▼─────────┐
-│              Opencode Plugin                   │
+│              Agent Harness Plugin              │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐   │
 │  │ Transport│  │  Store   │  │  Tools   │   │
 │  │ (Socket) │  │ (SQLite) │  │ (MCP)    │   │
@@ -145,7 +145,7 @@ const socketPath = process.env.AI_REVIEW_SOCKET || getDefaultSocketPath();
 
 ### Phase 1: Foundation + Testing Infrastructure
 
-**Opencode Plugin:**
+**Agent Harness Plugin:**
 - [ ] Socket transport layer (cross-platform)
 - [ ] Message protocol (JSON serialization/deserialization)
 - [ ] SQLite schema with migrations
@@ -170,13 +170,13 @@ const socketPath = process.env.AI_REVIEW_SOCKET || getDefaultSocketPath();
   - Configuration tests
 
 **Testing Strategy Phase 1:**
-- Opencode: Use Node.js test runner (built-in) or Vitest
+- Agent harness: Use Node.js test runner (built-in) or Vitest
 - Neovim: Use mini.test with child process isolation
 - Create test fixtures for sample jj diffs
 
 ### Phase 2: Core Review Flow + UI Testing
 
-**Opencode Plugin:**
+**Agent Harness Plugin:**
 - [ ] Change application logic (write to user files)
 - [ ] Sync response handling
 - [ ] Notification system
@@ -213,7 +213,7 @@ const socketPath = process.env.AI_REVIEW_SOCKET || getDefaultSocketPath();
 
 ### Phase 3: Sync & State + Recovery Testing
 
-**Opencode Plugin:**
+**Agent Harness Plugin:**
 - [ ] Bidirectional sync (receive user modifications)
 - [ ] Hunk-level vs full file sync
 - [ ] Conflict detection and queueing
@@ -225,7 +225,7 @@ const socketPath = process.env.AI_REVIEW_SOCKET || getDefaultSocketPath();
   - Concurrent access tests
 
 **Neovim Plugin:**
-- [ ] State persistence (SQLite via opencode):
+- [ ] State persistence (SQLite via agent harness):
   - Cursor position
   - Sidebar state
   - Review progress
@@ -251,87 +251,87 @@ const socketPath = process.env.AI_REVIEW_SOCKET || getDefaultSocketPath();
 
 ## Project Structure
 
+The Neovim plugin is the only part implemented so far. The agent-harness
+plugin is planned (see Implementation Phases) but does not exist in this repo;
+it will live in a separate repository.
+
+### Current (implemented)
+
 ```
-ai-review/
-├── opencode-plugin/
-│   ├── src/
-│   │   ├── index.ts              # Entry point
-│   │   ├── transport/
-│   │   │   ├── server.ts         # Socket server
-│   │   │   ├── connection.ts     # Connection management
-│   │   │   └── platform.ts       # Platform-specific logic
-│   │   ├── protocol/
-│   │   │   ├── types.ts          # TypeScript types
-│   │   │   ├── encoder.ts        # Message encoding
-│   │   │   └── decoder.ts        # Message decoding
-│   │   ├── store/
-│   │   │   ├── database.ts       # SQLite connection
-│   │   │   ├── migrations/       # Schema migrations
-│   │   │   ├── changes.ts        # Change CRUD
-│   │   │   ├── files.ts          # File CRUD
-│   │   │   ├── hunks.ts          # Hunk CRUD
-│   │   │   └── state.ts          # Review state
-│   │   ├── tools/
-│   │   │   ├── publish.ts        # MCP: publish_changes
-│   │   │   ├── view.ts           # MCP: view_change
-│   │   │   ├── retract.ts        # MCP: retract_change
-│   │   │   └── modify.ts         # MCP: modify_change
-│   │   └── sync/
-│   │       ├── apply.ts          # Apply changes to files
-│   │       └── handler.ts        # Handle user responses
-│   ├── tests/
-│   │   ├── unit/
-│   │   │   ├── transport.test.ts
-│   │   │   ├── protocol.test.ts
-│   │   │   └── store.test.ts
-│   │   ├── integration/
-│   │   │   ├── socket.test.ts
-│   │   │   └── sync.test.ts
-│   │   └── fixtures/
-│   │       └── sample.diff       # jj diff format samples
-│   ├── package.json
-│   └── tsconfig.json
-│
-├── nvim-plugin/
-│   ├── lua/ai-review/
-│   │   ├── init.lua              # Entry point
-│   │   ├── config.lua            # Configuration
-│   │   ├── transport/
-│   │   │   ├── client.lua        # Socket client
-│   │   │   └── connection.lua    # Connection management
-│   │   ├── protocol/
-│   │   │   ├── types.lua         # Type definitions
-│   │   │   ├── encoder.lua       # Message encoding
-│   │   │   └── decoder.lua       # Message decoding
-│   │   ├── sidebar/
-│   │   │   ├── init.lua          # Sidebar setup
-│   │   │   ├── component.lua     # dap-ui component
-│   │   │   ├── renderer.lua      # Tree rendering
-│   │   │   └── actions.lua       # User actions
-│   │   ├── review/
-│   │   │   ├── buffer.lua        # Review buffer management
-│   │   │   ├── hunks.lua         # Hunk display (gitsigns)
-│   │   │   ├── actions.lua       # Accept/reject handlers
-│   │   │   └── lsp.lua           # LSP integration
-│   │   └── state/
-│   │       ├── persistence.lua   # State persistence
-│   │       └── recovery.lua      # Crash recovery
-│   ├── tests/
-│   │   ├── test_transport.lua    # Socket client tests
-│   │   ├── test_protocol.lua     # Protocol tests
-│   │   ├── test_sidebar.lua      # Sidebar UI tests
-│   │   ├── test_review.lua       # Review flow tests
-│   │   ├── test_state.lua        # State tests
-│   │   ├── helpers.lua           # Test utilities
-│   │   ├── minimal_init.lua      # Test initialization
-│   │   ├── fixtures/
-│   │   │   ├── sample.diff
-│   │   │   └── sample.lua        # Fixture files
-│   │   └── screenshots/          # Reference screenshots
-│   │       └── .gitkeep
-│   └── Makefile
-│
-└── README.md                     # Setup instructions
+codeforge-nvim/
+├── lua/codeforge/
+│   ├── init.lua                  # setup(); dap-ui element + :CodeForge command
+│   ├── state.lua                 # in-memory review state (changes/files/hunks)
+│   └── sidebar/
+│       └── element.lua           # dap-ui element: renders tree, keymaps
+├── plugin/
+│   └── codeforge.lua             # (empty; no autoloaded entry yet)
+├── tests/
+│   ├── init.lua                  # minimal init: rtp + mini.test + codeforge.setup
+│   ├── test_setup.lua            # sanity that setup loads
+│   ├── test_sidebar.lua          # opens on right, shows title, no-changes
+│   ├── test_sidebar_changes.lua  # header count, next/prev change w/ wraparound
+│   ├── test_sidebar_files_hunks.lua  # file listing; expand file -> hunks
+│   └── screenshots/              # mini.test reference screenshots
+├── .luarc.json
+└── PLAN.md                       # this file
+```
+
+### Planned additions to the Neovim plugin (see "Edit Buffer / Review Flow" below)
+
+```
+lua/codeforge/review/
+│   ├── buffer.lua   # open/swap/dismiss; snapshot U; load P; assemble final
+│   ├── diff.lua     # virtual-fold extmarks (deletions), add-line hl, per-hunk marks
+│   ├── apply.lua    # per-hunk accept/reject; git merge-file 3-way; conflict detect
+│   ├── resolve.lua  # 3-way :diffthis sub-flow, diffget handlers, finalize region
+│   └── actions.lua  # keymap handlers, find/open real buffer, wire review <-> sidebar
+```
+
+Transport (`lua/codeforge/transport/`), protocol, and persistence will be added
+when the agent-harness integration begins; their layout is not yet fixed.
+
+### Planned: agent-harness plugin (separate repo)
+
+```
+agent-harness-plugin/
+├── src/
+│   ├── index.ts              # Entry point
+│   ├── transport/
+│   │   ├── server.ts         # Socket server
+│   │   ├── connection.ts     # Connection management
+│   │   └── platform.ts       # Platform-specific logic
+│   ├── protocol/
+│   │   ├── types.ts          # TypeScript types
+│   │   ├── encoder.ts        # Message encoding
+│   │   └── decoder.ts        # Message decoding
+│   ├── store/
+│   │   ├── database.ts       # SQLite connection
+│   │   ├── migrations/       # Schema migrations
+│   │   ├── changes.ts        # Change CRUD
+│   │   ├── files.ts          # File CRUD
+│   │   ├── hunks.ts          # Hunk CRUD
+│   │   └── state.ts          # Review state
+│   ├── tools/
+│   │   ├── publish.ts        # MCP: publish_changes
+│   │   ├── view.ts           # MCP: view_change
+│   │   ├── retract.ts        # MCP: retract_change
+│   │   └── modify.ts         # MCP: modify_change
+│   └── sync/
+│       ├── apply.ts          # Apply changes to files
+│       └── handler.ts        # Handle user responses
+├── tests/
+│   ├── unit/
+│   │   ├── transport.test.ts
+│   │   ├── protocol.test.ts
+│   │   └── store.test.ts
+│   ├── integration/
+│   │   ├── socket.test.ts
+│   │   └── sync.test.ts
+│   └── fixtures/
+│       └── sample.diff       # jj diff format samples
+├── package.json
+└── tsconfig.json
 ```
 
 ## Testing Framework
@@ -345,7 +345,7 @@ Use **mini.test** (from mini.nvim) rather than plenary.test_harness because:
 - Works both headlessly and interactively
 - No CI requirement
 
-### Opencode Plugin
+### Agent Harness Plugin
 
 Use **Vitest** (or Node.js built-in test runner) because:
 - Excellent TypeScript support
@@ -389,3 +389,176 @@ end
 - Fixtures are read-only
 - Socket connections use ephemeral sockets in `/tmp`
 - SQLite tests use `:memory:` database or temp files
+
+---
+
+## Edit Buffer / Review Flow (Settled Design)
+
+This section records the design for the in-Neovim review experience. The
+review-module layout proposed here is listed under "Planned additions" in the
+Project Structure section above.
+
+### Goal
+
+Reviewing a file's proposed changes must feel like normal editing with full LSP
+(diagnostics, completions, hover, code actions). Accept/reject happens at the
+**hunk** level. CodeForge never writes to disk; the user saves normally.
+
+### Core model: in-place swap
+
+Reviewing a file = **temporarily loading the AI proposal `P` into the real file
+buffer**, reviewing/editing it with full LSP, then resolving per-hunk
+accept/reject against a snapshot of the user's prior edits `U`.
+
+This is the only design that gives full LSP on the proposal, because LSP allows
+only one open document per `file://` URI at a time and only `file://` URIs get
+full project context. Keeping the proposal in the real buffer means the URI stays
+continuously open and LSP never detaches.
+
+It does **not** preclude the user having the same file open in multiple windows:
+Neovim's `:edit <path>` on an already-open path reuses the existing buffer, so
+duplicate-open is "many windows, one buffer" — all windows show the proposal
+during review, which is correct.
+
+### The versions
+
+| symbol | meaning | source |
+|--------|---------|--------|
+| **O** | base — the file the AI diffed against | sent by agent harness change-set (`content`/`sync`) |
+| **P** | proposal — base + hunk(s) applied | built by applying hunks to `O` |
+| **U** | user's current unsaved buffer content | snapshotted on open, before loading `P` |
+| **P′** | proposal + user's review edits | live buffer content at resolve time |
+
+### Open flow (Enter on a file line in the sidebar)
+
+1. Find the real buffer for `path` (already loaded → reuse; one buffer, possibly
+   many windows). If not loaded anywhere, load it (hidden is fine).
+2. **Snapshot `U`** = current buffer lines, into memory (per-change, per-file).
+3. Build `P` by applying the change's hunks to `O`.
+4. **Swap** buffer content → `P` (a `didChange`; LSP re-diagnoses `P` → full
+   fidelity: diagnostics, completion, hover, code actions on the proposal).
+5. Install virtual-fold extmarks for deletions (lines in `O` not in `P`),
+   add-line highlights for additions, and per-hunk markers/keys.
+6. Record that this file is under review.
+
+### Deletion = virtual fold (restorable)
+
+Deleted lines live as **extmark `virt_lines`** anchored at their position —
+never real buffer text, invisible to LSP, never written to disk.
+
+- Default **collapsed**: one virtual line, e.g.
+  `─ 3 lines removed (<C-x>t to expand, <C-x>r to restore)`.
+- `<C-x>t` toggles expand/collapse (swap the extmark's virt_lines).
+- `<C-x>r` **restores**: promote those lines into real buffer lines at that position
+  (they become part of `P′`, a local edit; other edits untouched).
+- Keys are **configurable** (see Config), applied buffer-local.
+
+### Accept / reject (per hunk)
+
+A hunk defines a region `R` of `O`. At resolve time:
+
+- **accept(hunk)** → `final[R] = merge3(O[R], P′[R], U[R])` via
+  `git merge-file -p <U[R]> <O[R]> <P′[R]>`
+  - `U[R] == O[R]` (you didn't touch it) → clean take of `P′`.
+  - both touched → see Conflict resolution below.
+  - idempotent: already-accepted → no-op.
+- **reject(hunk)** → `final[R] = U[R]` (drop the AI change; your edits untouched).
+  Mark `rejected`.
+- Accepted/rejected hunks are removed from the review view (or faded `[A]`/`[R]`).
+
+### Conflict resolution (first-class)
+
+A conflict arises at accept time for a hunk region `R` when both sides edited the
+same region: `P′[R] ≠ O[R]` **and** `U[R] ≠ O[R]`. Because in-place swap keeps
+the live buffer as `P′` (not a merge result), we do **not** paste `git merge-file`'s
+conflict-marker output into the live buffer. Instead:
+
+1. **Detect** via `git merge-file -p U[R] O[R] P′[R]` exit code (per-region, so
+   accepting one hunk doesn't force you through another's conflict).
+2. **Resolve** with native Neovim 3-way diff (`:diffthis`), scoped to `R`:
+   - `diffthis` on the live review buffer (`P′[R]`, writable, keeps full LSP).
+   - scratch buffer: `U[R]` (ours — your pre-review edits, read-only).
+   - scratch buffer: `O[R]` (base, read-only).
+   - User resolves with `]c`/`[c` + `:diffget //2` (take ours/U) / `:diffget //3`
+     (take theirs/P′), or hand-edits the live buffer. LSP stays live throughout.
+3. **Confirm**: `final[R]` = live buffer's resolved `R`; `status='accepted'`;
+   close scratch buffers; `diffoff`.
+
+We use `git merge-file` only to *detect* conflict; Neovim's native diff does the
+*resolution*. `git` is a hard dependency (matches every existing Neovim merge
+plugin). No from-scratch diff3.
+
+### Finish / dismiss
+
+1. Assemble `final` from per-region picks (accepted→merged, rejected→`U`,
+   untouched regions→`U`).
+2. Load `final` into the buffer (another `didChange`; LSP re-diagnoses the real
+   file).
+3. Tear down extmarks/keymaps; clear review state for the file. Ephemeral — no
+   LSP document left open beyond the real one.
+4. The user `:w` when they want; CodeForge never writes.
+
+### LSP
+
+In-place swap means the real `file://` URI stays continuously open — LSP never
+detaches, full project context throughout. "LSP as a server": we drive
+`didChange`, consume diagnostics/completion, never persist a separate document.
+
+- Auto-attach + diagnostics + code actions: free, since it's the real buffer.
+- **Format-on-accept: dropped** (deferred).
+
+### Config additions
+
+```lua
+require('codeforge').setup({
+  keymaps = {
+    next_change   = "<C-]>",
+    prev_change   = "<C-[>",
+    toggle_file  = "o",
+    open_file     = "<CR>",   -- open review buffer for a file (low-cost default)
+    toggle_fold   = "<C-x>t",  -- expand/collapse a deletion fold
+    restore       = "<C-x>r",  -- promote a deletion to real lines
+    accept_hunk   = "<C-x>a",  -- accept the hunk under the cursor
+    reject_hunk   = "<C-x>j",  -- reject the hunk under the cursor
+    resolve_hunk  = "<C-x>c",  -- enter 3-way diff resolve for a conflicted hunk
+    dismiss       = "<C-x>d",  -- leave review (assemble final, restore buffer)
+  },
+})
+```
+
+### State additions (`state.lua`, per file in a change)
+
+```lua
+file.review = {
+  real_bufnr,            -- the file buffer under review
+  U            = {...},   -- snapshotted original lines
+  O            = {...},   -- base (from change-set)
+  hunks[i].status        -- 'pending'|'accepted'|'rejected'|'conflicted'
+  deletions    = { id, anchor, lines, expanded },  -- virtual folds
+  restored     = { id },                              -- promoted to real lines
+}
+```
+
+### Proposed file layout (new code)
+
+```
+lua/codeforge/
+  sidebar/element.lua   -- (existing) change/file/hunk tree
+  review/
+    buffer.lua   -- open/swap/dismiss; snapshot U; load P; assemble final
+    diff.lua     -- virtual-fold extmarks (deletions), add-line hl, per-hunk marks
+    apply.lua    -- per-hunk accept/reject; git merge-file 3-way; conflict detect
+    resolve.lua  -- 3-way :diffthis sub-flow, diffget handlers, finalize region
+    actions.lua  -- keymap handlers, find/open real buffer, wire review <-> sidebar
+```
+
+`lsp.lua` is intentionally absent — in-place swap gets LSP for free.
+
+### Prerequisites / open data question
+
+The merge needs **O** (base content the AI diffed against). The change-set schema
+already has `content` on files and a `sync_response`; the agent harness should
+send `O` with each change. If `O` is ever absent, we fall back to reconstructing
+it from the current file by reversing the hunks — but only valid when the current
+file equals `P`, so this is a degraded fallback, not the primary path.
+
