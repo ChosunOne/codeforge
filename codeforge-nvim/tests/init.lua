@@ -1,4 +1,8 @@
-vim.o.runtimepath = vim.fn.getcwd() .. "," .. vim.o.runtimepath
+local this = debug.getinfo(1, "S").source:sub(2)
+local root = vim.fn.fnamemodify(vim.fn.resolve(this), ":p:h:h")
+vim.o.runtimepath = root .. "," .. vim.o.runtimepath
+
+package.path = root .. "/tests/?.lua;" .. package.path
 
 local mini_path = vim.fn.stdpath("data") .. "/lazy/mini.nvim"
 local dapui_path = vim.fn.stdpath("data") .. "/lazy/nvim-dap-ui"

@@ -262,6 +262,7 @@ codeforge-nvim/
 ├── lua/codeforge/
 │   ├── init.lua                  # setup(); dap-ui element + :CodeForge command
 │   ├── state.lua                 # in-memory review state (changes/files/hunks)
+│   ├── highlight.lua             # shared highlight groups (sidebar + review)
 │   └── sidebar/
 │       └── element.lua           # dap-ui element: renders tree, keymaps
 ├── plugin/
@@ -438,7 +439,9 @@ during review, which is correct.
 4. **Swap** buffer content → `P` (a `didChange`; LSP re-diagnoses `P` → full
    fidelity: diagnostics, completion, hover, code actions on the proposal).
 5. Install virtual-fold extmarks for deletions (lines in `O` not in `P`),
-   add-line highlights for additions, and per-hunk markers/keys.
+   add-line highlights for additions, and per-hunk markers/keys. Add-line and
+   deletion highlighting reuse the `CodeForgeHunk*` groups from
+   `lua/codeforge/highlight.lua` (shared with the sidebar).
 6. Record that this file is under review.
 
 ### Deletion = virtual fold (restorable)
