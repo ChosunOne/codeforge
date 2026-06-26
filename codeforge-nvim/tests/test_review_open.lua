@@ -37,7 +37,8 @@ T["open loads the proposal into the real file buffer"] = function()
 	local got = child.api.nvim_buf_get_lines(buf, 0, -1, false)
 	Q.expect_lines("proposal P", got, { "a", "b", "B", "c" })
 
-	local U = child.lua_get(string.format([[require("codeforge.state").get_review(%s).U]], vim.inspect(path)))
+	local U =
+		child.lua_get(string.format([[require("codeforge.state").get_review(%s).buf_snapshot]], vim.inspect(path)))
 
 	Q.expect_lines("snapshot U", U, O)
 end
@@ -54,7 +55,8 @@ T["open snapshots the user's unsaved edits as U"] = function()
 
 	child.lua(string.format([[require("codeforge.review.buffer").open(%s)]], vim.inspect(path)))
 
-	local U = child.lua_get(string.format([[require("codeforge.state").get_review(%s).U]], vim.inspect(path)))
+	local U =
+		child.lua_get(string.format([[require("codeforge.state").get_review(%s).buf_snapshot]], vim.inspect(path)))
 	Q.expect_lines("snapshot U", U, { "a", "X", "c" })
 
 	local buf = Q.find_buf(path)
@@ -109,7 +111,8 @@ T["open loads the file hidden if it is not already open"] = function()
 	local got = child.api.nvim_buf_get_lines(buf, 0, -1, false)
 	Q.expect_lines("proposal P", got, { "a", "b", "B", "c" })
 
-	local U = child.lua_get(string.format([[require("codeforge.state").get_review(%s).U]], vim.inspect(path)))
+	local U =
+		child.lua_get(string.format([[require("codeforge.state").get_review(%s).buf_snapshot]], vim.inspect(path)))
 
 	Q.expect_lines("snapshot U", U, O)
 end
