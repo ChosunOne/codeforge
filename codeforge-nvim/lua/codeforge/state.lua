@@ -6,6 +6,7 @@ M.current_change_index = nil
 M.expanded_files = {}
 M.selected_path = nil
 M.last_view_state = nil
+M.reviews = {}
 M._on_change = nil
 
 function M.reset()
@@ -13,6 +14,7 @@ function M.reset()
 	M.current_change_id = nil
 	M.current_change_index = nil
 	M.expanded_files = {}
+	M.reviews = {}
 	M.selected_path = nil
 	M.last_view_state = nil
 end
@@ -44,6 +46,32 @@ end
 ---@field lines string[]
 ---@field status Status
 ---@field modified_content string|nil
+
+---@class Review
+---@field real_bufnr integer the file buffer under review
+---@field buf_snapshot string[] snapshotted original buffer lines
+---@field base_content string[] base content the AI diffed against
+---@field hunks Hunk[] hunks for this file
+
+---Get the review record for `path`, or nil if not under review.
+---@param path string
+---@return Review|nil
+function M.get_review(path)
+	return M.reviews[path]
+end
+
+---Store/replace the review record for `path`
+---@param path string
+---@param review Review
+function M.set_review(path, review)
+	M.reviews[path] = review
+end
+
+---Clear the review record for `path`.
+---@param path string
+function M.clear_review(path)
+	M.reviews[path] = nil
+end
 
 -- Set a callback for when state changes
 ---@param callback function
