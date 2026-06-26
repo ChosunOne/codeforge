@@ -116,4 +116,19 @@ function M.open(path)
 	})
 end
 
+---End reviewing `path`: restore the snapshotted buffer content and clear
+---the review record.
+---@param path string
+function M.dismiss(path)
+	local review = state.get_review(path)
+	if not review then
+		return
+	end
+	local buf = review.real_bufnr
+	if buf and vim.api.nvim_buf_is_valid(buf) then
+		vim.api.nvim_buf_set_lines(buf, 0, -1, false, review.buf_snapshot)
+	end
+	state.clear_review(path)
+end
+
 return M

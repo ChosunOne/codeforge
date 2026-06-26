@@ -155,8 +155,8 @@ T["dismiss restores the original U into the buffer"] = function()
 	local got = child.api.nvim_buf_get_lines(buf, 0, -1, false)
 	Q.expect_lines("buffer restored to U", got, U)
 
-	local review = child.lua_get(string.format([[require("codeforge.state").get_review(%s)]], vim.inspect(path)))
-	MiniTest.expect.equality(review == nil, true, { fail_reason = "review record should be cleared after dismiss" })
+	local review = child.lua_get(string.format([[require("codeforge.state").get_review(%s) == nil]], vim.inspect(path)))
+	MiniTest.expect.equality(review, true, { fail_reason = "review record should be cleared after dismiss" })
 end
 
 T["pressing <CR> on a file line in the sidebar opens the review buffer"] = function()
@@ -171,9 +171,9 @@ T["pressing <CR> on a file line in the sidebar opens the review buffer"] = funct
 	child.type_keys("3gg")
 	child.type_keys("<CR>")
 
-	local review = child.lua_get(string.format([[require("codeforge.state").get_review(%s)]], vim.inspect(path)))
+	local review = child.lua_get(string.format([[require("codeforge.state").get_review(%s) ~= nil]], vim.inspect(path)))
 
-	MiniTest.expect.equality(review ~= nil, true, { fail_reason = "<CR> on file line should open review" })
+	MiniTest.expect.equality(review, true, { fail_reason = "<CR> on file line should open review" })
 
 	local buf = Q.find_buf(path)
 	MiniTest.expect.equality(buf ~= nil, true)
