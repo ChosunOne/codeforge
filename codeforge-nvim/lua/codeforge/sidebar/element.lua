@@ -65,6 +65,10 @@ return function(user_config)
 							state.toggle_file(file.path)
 						end, { line = current_line })
 
+						canvas:add_mapping("expand", function()
+							require("codeforge.review.buffer").open(file.path)
+						end, { line = current_line })
+
 						current_line = current_line + 1
 
 						if is_expanded and file.hunks and #file.hunks > 0 then
