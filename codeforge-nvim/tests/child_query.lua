@@ -54,6 +54,48 @@ function M.extmarks(buf, ns)
 	return child.api.nvim_buf_get_extmarks(buf, ns, 0, -1, { details = true })
 end
 
+---All extmarks anchored at the exact (0-indexed) `row`/`col`, with details.
+---@param buf integer
+---@param ns integer
+---@param row integer 0-indexed line
+---@param col integer 0-indexed column
+---@return Extmark[] marks
+function M.extmarks_at(buf, ns, row, col)
+	local out = {}
+	for _, m in ipairs(M.extmarks(buf, ns)) do
+		if m[2] == row and m[3] == col then
+			out[#out + 1] = m
+		end
+	end
+	return out
+end
+
+---@param buf integer
+---@param ns integer
+---@param row integer 0-indexed line
+---@return ExtmarkDetails?
+function M.hl_at(buf, ns, row)
+	for _, m in ipairs(M.extmarks_at(buf, ns, row, 0)) do
+		if m[4] and m[4].hl_group then
+			return m[4]
+		end
+	end
+	return nil
+end
+
+---@param buf integer
+---@param ns integer
+---@param row integer
+---@return ExtmarkDetails?
+function M.fold_at(buf, ns, row)
+	for _, m in ipairs(M.extmarks_at(buf, ns, row, 0)) do
+		if m[4] and m[4].virt_lines then
+			return m[4]
+		end
+	end
+	return nil
+end
+
 ---True if any extmark carries a virt_lines block whose joined
 ---text contains `needle`
 ---@param buf integer
@@ -110,21 +152,6 @@ function M.has_sign(buf, ns, group)
 		end
 	end
 	return false
-end
-
---- Look up an extmark by id
----@param buf integer
----@param ns integer
----@param id integer|string extmark id
----@return integer|nil start_row1 1-indexed
----@return integer|nil end_row1	1-indexed
----@return ExtmarkDetails? details
-function M.find_extmark_by_id(buf, ns, id)
-	local m = child.api.nvim_buf_get_extmark_by_id(buf, ns, id, { details = true })
-	if m and m[1] ~= nil then
-		return m[1] + 1, m[2] + 1, m[3]
-	end
-	return nil
 end
 
 return M
