@@ -35,6 +35,7 @@ end
 ---@field path string
 ---@field status Status
 ---@field hunks Hunk[]
+---@field base string[]?
 
 ---@class Hunk
 ---@field id string
@@ -46,12 +47,6 @@ end
 ---@field lines string[]
 ---@field status Status
 ---@field modified_content string|nil
-
----@class Review
----@field real_bufnr integer the file buffer under review
----@field buf_snapshot string[] snapshotted original buffer lines
----@field base_content string[] base content the AI diffed against
----@field hunks Hunk[] hunks for this file
 
 ---Get the review record for `path`, or nil if not under review.
 ---@param path string

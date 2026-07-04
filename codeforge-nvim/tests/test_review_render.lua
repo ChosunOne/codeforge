@@ -18,6 +18,8 @@ local function focus_buf(buf)
 	for _, w in ipairs(child.api.nvim_list_wins()) do
 		if child.api.nvim_win_get_buf(w) == buf then
 			child.api.nvim_set_current_win(w)
+			child.api.nvim_buf_set_name(buf, "review")
+			child.o.laststatus = 0
 			return
 		end
 	end
@@ -54,7 +56,7 @@ end
 
 local function is_added_highlight(details)
 	return details ~= nil
-		and details.hl_Group == "CodeForgeHunkAdded"
+		and details.hl_group == "CodeForgeHunkAdded"
 		and details.sign_hl_group == "CodeForgeHunkAdded"
 		and details.sign_text == "+ "
 end
@@ -76,14 +78,14 @@ T["added lines render with a DiffAdd highlight and a sign"] = function()
 	local path = F.tmp_path()
 	child.fn.writefile(O, path)
 	child.cmd("edit " .. path)
-	local hunk = F.replace_hunk("hunk-add", 2, "b", "B")
+	local hunk = F.insert_hunk("hunk-add", 2, { "B" })
 	F.seed_change(path, O, { hunk })
 
 	child.lua(string.format([[require("codeforge.review.buffer").open(%s)]], vim.inspect(path)))
 
 	local buf = Q.find_buf(path) ---@type integer
 	MiniTest.expect.equality(buf ~= nil, true, { fail_reason = "review buffer missing" })
-	Q.expect_lines("P", child.api.nvim_buf_get_lines(buf, 0, -1, false), { "a", "B", "c" })
+	Q.expect_lines("P", child.api.nvim_buf_get_lines(buf, 0, -1, false), { "a", "B", "b", "c" })
 
 	local n = ns()
 	local hl = Q.hl_at(buf, n, 1)
@@ -94,6 +96,7 @@ T["added lines render with a DiffAdd highlight and a sign"] = function()
 	)
 	MiniTest.expect.equality(#Q.extmarks_at(buf, n, 0, 0), 0, { fail_reason = "context line 0 decorated" })
 	MiniTest.expect.equality(#Q.extmarks_at(buf, n, 2, 0), 0, { fail_reason = "context line 2 decorated" })
+	MiniTest.expect.equality(#Q.extmarks_at(buf, n, 3, 0), 0, { fail_reason = "context line 3 decorated" })
 
 	focus_buf(buf)
 	MiniTest.expect.reference_screenshot(child.get_screenshot())
