@@ -24,8 +24,9 @@ end
 ---@param path string
 ---@return integer|nil bufnr
 local function find_loaded_buf(path)
+	local abs = vim.fn.fnamemodify(path, ":p")
 	for _, b in ipairs(vim.api.nvim_list_bufs()) do
-		if vim.api.nvim_buf_get_name(b) == path then
+		if vim.fn.fnamemodify(vim.api.nvim_buf_get_name(b), ":p") == abs then
 			return b
 		end
 	end
@@ -45,12 +46,19 @@ function M.open(path)
 	local buf = find_loaded_buf(path)
 	if not buf then
 		buf = vim.api.nvim_create_buf(false, true)
-		vim.api.nvim_buf_set_name(buf, path)
-		local lines = {}
-		if vim.fn.filereadable(path) == 1 then
-			lines = vim.fn.readfile(path)
+		local ok = pcall(vim.api.nvim_buf_set_name, buf, path)
+		if not ok then
+			local abs = vim.fn.fnamemodify(path, ":p")
+			for _, b in ipairs(vim.api.nvim_list_bufs()) do
+				if vim.fn.fnamemodify(vim.api.nvim_buf_get_name(b), ":p") == abs then
+					buf = b
+					break
+				end
+			end
 		end
-		vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+		if vim.fn.filereadable(path) == 1 then
+			vim.api.nvim_buf_set_lines(buf, 0, -1, false, vim.fn.readfile(path))
+		end
 		vim.bo[buf].buftype = ""
 		vim.bo[buf].swapfile = false
 	end
