@@ -243,4 +243,31 @@ T["open focuses the window already showing the review buffer"] = function()
 	)
 end
 
+T["open on a newly added file shows the new content in the review buffer"] = function()
+	local path = F.tmp_path()
+	local lines = { "local M = {}", "function M.greet()", "  return 'hi'", "end", "return M" }
+	F.seed_added_file(path, lines)
+
+	MiniTest.expect.equality(Q.find_buf(path) == nil, true, { fail_reason = "file should not be open yet" })
+
+	child.lua(string.format([[require("codeforge.review.buffer").open(%s)]], vim.inspect(path)))
+
+	local buf = Q.find_buf(path)
+	MiniTest.expect.equality(buf ~= nil, true, { fail_reason = "review buffer not created" })
+	Q.expect_lines("P", child.api.nvim_buf_get_lines(buf, 0, -1, false), lines)
+	local win = Q.win_for_buf(buf)
+
+	MiniTest.expect.equality(win ~= nil, true, { fail_reason = "review buffer not shown in any window" })
+	MiniTest.expect.equality(
+		not Q.is_sidebar_buf(buf),
+		true,
+		{ fail_reason = "review buffer shown in the sidebar window" }
+	)
+	MiniTest.expect.equality(
+		child.api.nvim_get_current_win() == win,
+		true,
+		{ fail_reason = "review buffer window not focused" }
+	)
+end
+
 return T

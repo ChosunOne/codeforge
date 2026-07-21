@@ -88,6 +88,9 @@ return function(user_config)
 						local status_hl = require("codeforge.highlight").get_status_hl(file.status, false)
 						canvas:write(" ")
 						canvas:write("[" .. status_upper .. "]\n", { group = status_hl })
+						canvas:add_mapping("expand", function()
+							require("codeforge.review.buffer").open(file.path)
+						end, { line = current_line })
 						current_line = current_line + 1
 					end
 				end

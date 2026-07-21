@@ -65,6 +65,50 @@ function M.seed_change(path, O, hunks)
 	))
 end
 
+---Seed state.changes with a one-file change for a newly added file at `path`
+---`lines` is the file's full new content; it is rendered as a
+---single pure-insertion hunk
+---@param path string
+---@param lines string[]
+function M.seed_added_file(path, lines)
+	local plus = {}
+	for i, l in ipairs(lines) do
+		plus[i] = "+" .. l
+	end
+	local hunk = {
+		id = "hunk-add-file",
+		old_start = 1,
+		old_lines = 0,
+		new_start = 1,
+		new_lines = #lines,
+		lines = plus,
+	}
+
+	child.lua(string.format(
+		[[
+		local state = require("codeforge.state")
+		state.reset()
+		state.changes = {
+			{
+				id = "change-001",
+				title = "Test change",
+				files = {
+					{
+						path = %s,
+						status = "added",
+						hunks = %s,
+					}
+				}
+			}
+		}
+		state.current_change_index = 1
+		state.current_change_id = "change-001"
+	]],
+		vim.inspect(path),
+		vim.inspect({ hunk })
+	))
+end
+
 ---Replace line `old` (at `at`) with `new1` (and optionally `new2`).
 ---@param id string
 ---@param at number
