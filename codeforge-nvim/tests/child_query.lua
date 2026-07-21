@@ -46,6 +46,25 @@ function M.expect_lines(name, got, want)
 	)
 end
 
+---The window showing `buf`, or nil.
+---@param buf integer
+---@return integer|nil winid
+function M.win_for_buf(buf)
+	for _, w in ipairs(child.api.nvim_list_wins()) do
+		if child.api.nvim_win_get_buf(w) == buf then
+			return w
+		end
+	end
+	return nil
+end
+
+---True if `buf` is the CodeForge sidebar
+---@param buf integer
+---@return boolean
+function M.is_sidebar_buf(buf)
+	return child.api.nvim_buf_get_option(buf, "filetype") == "codeforge"
+end
+
 ---All extmarks in `buf` / `ns` with details.
 ---@param buf integer
 ---@param ns integer

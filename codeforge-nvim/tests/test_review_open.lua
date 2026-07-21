@@ -181,4 +181,66 @@ T["pressing <CR> on a file line in the sidebar opens the review buffer"] = funct
 	Q.expect_lines("proposal P", got, { "a", "b", "B", "c" })
 end
 
+T["open shows the review buffer in a non-sidebar window and focuses it"] = function()
+	local O = { "a", "b", "c" }
+	local path = F.tmp_path()
+	child.fn.writefile(O, path)
+	local hunk = F.replace_hunk("hunk-001", 2, "b", "b", "B")
+	F.seed_change(path, O, { hunk })
+
+	MiniTest.expect.equality(Q.find_buf(path) == nil, true, { fail_reason = "file should not be open yet" })
+
+	child.lua(string.format([[require("codeforge.review.buffer").open(%s)]], vim.inspect(path)))
+
+	local buf = Q.find_buf(path)
+	MiniTest.expect.equality(buf ~= nil, true, { fail_reason = "review buffer not created" })
+
+	local win = Q.win_for_buf(buf)
+	MiniTest.expect.equality(win ~= nil, true, { fail_reason = "review buffer not shown in any window" })
+	MiniTest.expect.equality(
+		not Q.is_sidebar_buf(buf),
+		true,
+		{ fail_reason = "review buffer shown in the sidebar window" }
+	)
+
+	MiniTest.expect.equality(
+		child.api.nvim_get_current_win() == win,
+		true,
+		{ fail_reason = "review buffer window not focused" }
+	)
+end
+
+T["open focuses the window already showing the review buffer"] = function()
+	local O = { "a", "b", "c" }
+	local path = F.tmp_path()
+	child.fn.writefile(O, path)
+	child.cmd("edit " .. path)
+	local hunk = F.replace_hunk("hunk-001", 2, "b", "b", "B")
+	F.seed_change(path, O, { hunk })
+
+	local buf = Q.find_buf(path)
+	MiniTest.expect.equality(buf ~= nil, true)
+	local win_before = Q.win_for_buf(buf)
+	MiniTest.expect.equality(win_before ~= nil, true, { fail_reason = "file not shown before open" })
+	local wins_before = #child.api.nvim_list_wins()
+
+	child.lua(string.format([[require("codeforge.review.buffer").open(%s)]], vim.inspect(path)))
+
+	MiniTest.expect.equality(
+		Q.win_for_buf(buf) == win_before,
+		true,
+		{ fail_reason = "review buffer moved to a different window" }
+	)
+	MiniTest.expect.equality(
+		#child.api.nvim_list_wins() == wins_before,
+		true,
+		{ fail_reason = "open created a new window" }
+	)
+	MiniTest.expect.equality(
+		child.api.nvim_get_current_win() == win_before,
+		true,
+		{ fail_reason = "existing review window not focused" }
+	)
+end
+
 return T
