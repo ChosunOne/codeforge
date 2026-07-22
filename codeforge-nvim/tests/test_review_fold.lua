@@ -161,4 +161,94 @@ T["pressing <C-x>t on a fold anchor expands the fold"] = function()
 	end
 end
 
+---True if the review buffer has a buffer-local normal-mode mapping for `lhs`
+local function has_keymap(buf, lhs)
+	local want = lhs:lower()
+	for _, m in ipairs(child.api.nvim_buf_get_keymap(buf, "n")) do
+		if m.lhs:lower() == want then
+			return true
+		end
+	end
+	return false
+end
+
+T["pressing <C-x>r restores the deleted lines to real buffer text"] = function()
+	local O = { "a", "b", "c" }
+	local path = F.tmp_path()
+	child.fn.writefile(O, path)
+	child.cmd("edit " .. path)
+	local hunk = F.delete_hunk("hunk-del", 2, { "b" })
+	F.seed_change(path, O, { hunk })
+
+	local buf = open_review(path)
+	local n = ns()
+	Q.expect_lines("P", child.api.nvim_buf_get_lines(buf, 0, -1, false), { "a", "c" })
+
+	MiniTest.expect.equality(has_keymap(buf, "<C-x>r"), true, { fail_reason = "no <C-x>r keymap on the review buffer" })
+
+	local win = Q.win_for_buf(buf)
+	MiniTest.expect.equality(win ~= nil, true, { fail_reason = "review buffer not shown in a window" })
+	child.api.nvim_set_current_win(win)
+	child.api.nvim_win_set_cursor(win, { 1, 0 }) -- row 1 == 0-indexed row 0
+
+	MiniTest.expect.equality(
+		virt_line_has(Q.fold_at(buf, n, 0), "1 line removed"),
+		true,
+		{ fail_reason = "fold should be present before restore " }
+	)
+
+	child.type_keys("<C-x>r")
+
+	Q.expect_lines("restored P", child.api.nvim_buf_get_lines(buf, 0, -1, false), { "a", "b", "c" })
+	MiniTest.expect.equality(
+		Q.fold_at(buf, n, 0) == nil,
+		true,
+		{ fail_reason = "fold extmark should be removed after restore" }
+	)
+end
+
+T["restore shifts later add highlights to keep them on the right line"] = function()
+	local O = { "a", "b", "c", "d", "e" }
+	local path = F.tmp_path()
+	child.fn.writefile(O, path)
+	child.cmd("edit " .. path)
+	local h1 = F.delete_hunk("hunk-del", 2, { "b" })
+	local h2 = F.insert_hunk("hink-add", 5, { "X" })
+	F.seed_change(path, O, { h1, h2 })
+
+	local buf = open_review(path)
+	local n = ns()
+	Q.expect_lines("P", child.api.nvim_buf_get_lines(buf, 0, -1, false), { "a", "c", "d", "X", "e" })
+	local add_before = Q.hl_at(buf, n, 3)
+	MiniTest.expect.equality(
+		add_before ~= nil and add_before.hl_group == "CodeForgeHunkAdded",
+		true,
+		{ fail_reason = "add highlight should be on row 3 ('X') before restore" }
+	)
+
+	local win = Q.win_for_buf(buf)
+	child.api.nvim_set_current_win(win)
+	child.api.nvim_win_set_cursor(win, { 1, 0 })
+	child.type_keys("<C-x>r")
+
+	Q.expect_lines("restored P", child.api.nvim_buf_get_lines(buf, 0, -1, false), { "a", "b", "c", "d", "X", "e" })
+	MiniTest.expect.equality(
+		Q.fold_at(buf, n, 0) == nil,
+		true,
+		{ fail_reason = "fold extmark should be removed after restore" }
+	)
+
+	local add_after = Q.hl_at(buf, n, 4)
+	MiniTest.expect.equality(
+		add_after ~= nil and add_after.hl_group == "CodeForgeHunkAdded",
+		true,
+		{ fail_reason = "add highlight should have shifted to row 4 ('X') after restore" }
+	)
+	MiniTest.expect.equality(
+		Q.hl_at(buf, n, 3) == nil,
+		true,
+		{ fail_reason = "row 3 should no longer carry an add highlight after restore" }
+	)
+end
+
 return T

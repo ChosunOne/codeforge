@@ -6,6 +6,7 @@ M.config = {
 		prev_change = "<C-[>",
 		toggle_file = "o",
 		toggle_fold = "<C-x>t",
+		restore = "<C-x>r",
 	},
 }
 M._initialized = false

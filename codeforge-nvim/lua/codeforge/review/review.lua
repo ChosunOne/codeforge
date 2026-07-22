@@ -176,6 +176,36 @@ function Review:toggle_fold(row)
 	end
 end
 
+---Restore the deletion fold anchored at buffer row `row` (0-indexed)
+---Promote the deleted lines to real buffer text at that position and drop the fold.
+---No-op if no fold is anchored at `row`. Subsequent extmark rows are shifted to
+---account for the inserted lines
+---@param self Review
+---@param row integer 0-indexed buffer row
+function Review:restore_fold(row)
+	for _, p in ipairs(self.placements) do
+		if p.fold and p.fold.anchor_row == row then
+			local count = p.fold.count
+			local lines = p.fold.lines
+			vim.api.nvim_buf_set_lines(self.buf, row + 1, row + 1, false, lines)
+			p.fold = nil
+			self.expanded[p.hunk_id] = nil
+			for _, q in ipairs(self.placements) do
+				if q.fold and q.fold.anchor_row > row then
+					q.fold.anchor_row = q.fold.anchor_row + count
+				end
+				for j, r in ipairs(q.adds or {}) do
+					if r > row then
+						q.adds[j] = r + count
+					end
+				end
+			end
+			self:render()
+			return
+		end
+	end
+end
+
 ---Install the review-buffer keymaps on `self.buf`.
 ---Reads the configured keys from `codeforge.config.keymaps`.
 ---@param self Review
@@ -195,6 +225,10 @@ function Review:setup_keymaps()
 		local row = vim.api.nvim_win_get_cursor(0)[1] - 1 -- to 0-indexed
 		self:toggle_fold(row)
 	end, "CodeForge: toggle deletion fold")
+	map(cfg.restore, function()
+		local row = vim.api.nvim_win_get_cursor(0)[1] - 1 -- to 0-indexed
+		self:restore_fold(row)
+	end, "CodeForge: restore deleted lines")
 end
 
 ---@param self Review
