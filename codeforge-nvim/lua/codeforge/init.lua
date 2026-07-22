@@ -5,6 +5,7 @@ M.config = {
 		next_change = "<C-]>",
 		prev_change = "<C-[>",
 		toggle_file = "o",
+		toggle_fold = "<C-x>t",
 	},
 }
 M._initialized = false

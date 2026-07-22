@@ -9,9 +9,28 @@ local diff = require("codeforge.review.diff")
 ---@field hunks Hunk[] hunks for this file
 ---@field placements Placement[] per-hunk placement plan
 ---@field extmark_ids integer[] extmark ids created by the render
+---@field expanded table<string, boolean> hunk_id -> expanded
 
 local Review = {}
 Review.__index = Review
+
+---Build the virt_lines blcok for a `fold` given its expanded state.
+---Collapsed: the "- N line(s) removed" hint. Expanded: one virt line
+---per deleted line, each styled with `CodeForgeHunkDeleted`.
+---@param fold Fold
+---@param expanded boolean
+---@return table virt_lines
+local function fold_virt_lines(fold, expanded)
+	if expanded then
+		local lines = {}
+		for _, l in ipairs(fold.lines) do
+			lines[#lines + 1] = { { l, "CodeForgeHunkDeleted" } }
+		end
+		return lines
+	end
+	local text = string.format("- %d %s removed", fold.count, fold.count == 1 and "line" or "lines")
+	return { { { text, "CodeForgeHunkDeleted" } } }
+end
 
 ---@class Placement
 ---@field hunk_id string
@@ -21,6 +40,7 @@ Review.__index = Review
 ---@class Fold
 ---@field anchor_row integer
 ---@field count integer
+---@field lines string[]
 
 ---Construct a `Review` for `path` backed by `buf`, with base `base`
 ---@param path string
@@ -37,6 +57,7 @@ function Review.new(path, buf, base, hunks)
 		hunks = hunks or {},
 		placements = {},
 		extmark_ids = {},
+		expanded = {},
 	}, Review)
 end
 
@@ -64,9 +85,11 @@ function Review:apply_hunks()
 		end
 
 		local removed = 0
+		local removed_lines = {} ---@type string[]
 		for _, line in ipairs(h.lines) do
 			if line:sub(1, 1) == "-" then
 				removed = removed + 1
+				removed_lines[#removed_lines + 1] = line:sub(2)
 			end
 		end
 
@@ -76,7 +99,7 @@ function Review:apply_hunks()
 			if anchor_row < 0 then
 				anchor_row = 0
 			end
-			fold = { anchor_row = anchor_row, count = removed }
+			fold = { anchor_row = anchor_row, count = removed, lines = removed_lines }
 		end
 
 		cursor = cursor + h.old_lines
@@ -119,10 +142,9 @@ function Review:render()
 
 	for _, p in ipairs(self.placements) do
 		if p.fold then
-			local count = p.fold.count
-			local text = string.format("- %d %s removed", count, count == 1 and "line" or "lines")
+			local expanded = self.expanded[p.hunk_id] == true
 			local id = vim.api.nvim_buf_set_extmark(self.buf, ns, p.fold.anchor_row, 0, {
-				virt_lines = { { { text, "CodeForgeHunkDeleted" } } },
+				virt_lines = fold_virt_lines(p.fold, expanded),
 			})
 			self.extmark_ids[#self.extmark_ids + 1] = id
 		end
@@ -139,11 +161,48 @@ function Review:render()
 	end
 end
 
+---Toggle the deletion fold anchored at buffer row `row` (0-indexed)
+---between collapsed (hint) and expanded (deleted lines). No-op if no fold is
+---anchored at `row`.
+---@param self Review
+---@param row integer 0-indexed buffer row
+function Review:toggle_fold(row)
+	for _, p in ipairs(self.placements) do
+		if p.fold and p.fold.anchor_row == row then
+			self.expanded[p.hunk_id] = not (self.expanded[p.hunk_id] == true)
+			self:render()
+			return
+		end
+	end
+end
+
+---Install the review-buffer keymaps on `self.buf`.
+---Reads the configured keys from `codeforge.config.keymaps`.
+---@param self Review
+function Review:setup_keymaps()
+	local cfg = require("codeforge").config.keymaps or {}
+	local function map(key, fn, desc)
+		if not key then
+			return
+		end
+		vim.keymap.set("n", key, fn, {
+			buffer = self.buf,
+			silent = true,
+			desc = desc,
+		})
+	end
+	map(cfg.toggle_fold, function()
+		local row = vim.api.nvim_win_get_cursor(0)[1] - 1 -- to 0-indexed
+		self:toggle_fold(row)
+	end, "CodeForge: toggle deletion fold")
+end
+
 ---@param self Review
 function Review:open()
 	self.buf_snapshot = vim.api.nvim_buf_get_lines(self.buf, 0, -1, false)
 	self:apply_hunks()
 	self:render()
+	self:setup_keymaps()
 	state.set_review(self.path, self)
 end
 

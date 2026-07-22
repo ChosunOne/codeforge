@@ -5,6 +5,56 @@ local highlight = require("codeforge.highlight")
 highlight.setup()
 -- Reset state completely
 state.reset()
+
+-- Realistic file contents. Hunks use jj diff format lines: " " context,
+-- "-" removed, "+" added. `base` is the file content the AI diffed against
+-- (the O in O/P/U); for added files it is nil/empty.
+
+-- src/db/queries.lua  (added) -- whole file is additions
+local queries_new = {
+	"local M = {}",
+	"",
+	"---Run a SELECT with an explicit JOIN plan.",
+	"---@param db table",
+	"---@param sql string",
+	"---@param params table",
+	"---@return table[] rows",
+	"function M.select_join(db, sql, params)",
+	"  db:exec([[SET enable_nestloop = off]])",
+	"  local rows = db:query(sql, params)",
+	"  return rows",
+	"end",
+	"",
+	"return M",
+}
+
+-- src/db/connection.lua  (modified) -- base is the pre-edit version (O).
+-- Hunk replaces base line 7 (the timeout execute) with the fix + a pool
+-- assignment. Format: no context lines, just "-" removed + "+" added.
+local connection_base = {
+	"local M = {}",
+	"",
+	"local pool = {}",
+	"",
+	"function M.connect(opts)",
+	"  local conn = rawconnect(opts)",
+	"  conn:execute([[SET timeout = 5000]])",
+	"  return conn",
+	"end",
+	"",
+	"function M.disconnect(conn)",
+	"  conn:close()",
+	"  pool[conn] = nil",
+	"end",
+	"",
+	"return M",
+}
+local connection_removed = { "  conn:execute([[SET timeout = 5000]])" }
+local connection_added = {
+	"  conn:execute([[SET statement_timeout = 5000]])",
+	"  pool[conn] = true",
+}
+
 -- Create sample changes with various statuses
 local test_changes = {
 	{
@@ -19,42 +69,45 @@ local test_changes = {
 				hunks = {
 					{
 						id = "hunk-001",
-						description = "Optimize SELECT with JOIN",
-						old_start = 45,
-						old_lines = 8,
-						new_start = 45,
-						new_lines = 12,
-						lines = {},
-						status = "modified",
-						modified_content = nil,
-					},
-					{
-						id = "hunk-002",
-						description = "Add index hints",
-						old_start = 120,
-						old_lines = 3,
-						new_start = 124,
-						new_lines = 5,
-						lines = {},
+						description = "Add select_join helper",
+						old_start = 1,
+						old_lines = 0,
+						new_start = 1,
+						new_lines = #queries_new,
+						lines = (function()
+							local l = {}
+							for i, line in ipairs(queries_new) do
+								l[i] = "+" .. line
+							end
+							return l
+						end)(),
 						status = "added",
-						modified_content = nil,
 					},
 				},
 			},
 			{
 				path = "src/db/connection.lua",
 				status = "modified",
+				base = connection_base,
 				hunks = {
 					{
 						id = "hunk-003",
 						description = "Fix connection pooling",
-						old_start = 15,
-						old_lines = 10,
-						new_start = 15,
-						new_lines = 8,
-						lines = {},
+						old_start = 7,
+						old_lines = #connection_removed,
+						new_start = 7,
+						new_lines = #connection_added,
+						lines = (function()
+							local l = {}
+							for _, x in ipairs(connection_removed) do
+								l[#l + 1] = "-" .. x
+							end
+							for _, x in ipairs(connection_added) do
+								l[#l + 1] = "+" .. x
+							end
+							return l
+						end)(),
 						status = "modified",
-						modified_content = nil,
 					},
 				},
 			},
