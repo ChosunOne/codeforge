@@ -161,17 +161,6 @@ T["pressing <C-x>t on a fold anchor expands the fold"] = function()
 	end
 end
 
----True if the review buffer has a buffer-local normal-mode mapping for `lhs`
-local function has_keymap(buf, lhs)
-	local want = lhs:lower()
-	for _, m in ipairs(child.api.nvim_buf_get_keymap(buf, "n")) do
-		if m.lhs:lower() == want then
-			return true
-		end
-	end
-	return false
-end
-
 T["pressing <C-x>r restores the deleted lines to real buffer text"] = function()
 	local O = { "a", "b", "c" }
 	local path = F.tmp_path()
@@ -184,7 +173,11 @@ T["pressing <C-x>r restores the deleted lines to real buffer text"] = function()
 	local n = ns()
 	Q.expect_lines("P", child.api.nvim_buf_get_lines(buf, 0, -1, false), { "a", "c" })
 
-	MiniTest.expect.equality(has_keymap(buf, "<C-x>r"), true, { fail_reason = "no <C-x>r keymap on the review buffer" })
+	MiniTest.expect.equality(
+		F.has_keymap(buf, "<C-x>r"),
+		true,
+		{ fail_reason = "no <C-x>r keymap on the review buffer" }
+	)
 
 	local win = Q.win_for_buf(buf)
 	MiniTest.expect.equality(win ~= nil, true, { fail_reason = "review buffer not shown in a window" })

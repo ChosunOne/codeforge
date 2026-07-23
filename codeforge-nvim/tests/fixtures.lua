@@ -167,4 +167,15 @@ function M.insert_hunk(id, at, new_lines)
 	}
 end
 
+---True if the review buffer has a buffer-local normal-mode mapping for `lhs`
+function M.has_keymap(buf, lhs)
+	local want = lhs:lower()
+	for _, m in ipairs(child.api.nvim_buf_get_keymap(buf, "n")) do
+		if m.lhs:lower() == want then
+			return true
+		end
+	end
+	return false
+end
+
 return M

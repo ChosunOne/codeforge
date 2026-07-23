@@ -7,6 +7,7 @@ M.config = {
 		toggle_file = "o",
 		toggle_fold = "<C-x>t",
 		restore = "<C-x>r",
+		reject_hunk = "<C-x>j",
 	},
 }
 M._initialized = false

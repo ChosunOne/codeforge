@@ -10,6 +10,7 @@ local diff = require("codeforge.review.diff")
 ---@field placements Placement[] per-hunk placement plan
 ---@field extmark_ids integer[] extmark ids created by the render
 ---@field expanded table<string, boolean> hunk_id -> expanded
+---@field hunk_status table<string, string> hunk_id -> 'pending|'rejected'|'accepted'
 
 local Review = {}
 Review.__index = Review
@@ -58,6 +59,7 @@ function Review.new(path, buf, base, hunks)
 		placements = {},
 		extmark_ids = {},
 		expanded = {},
+		hunk_status = {},
 	}, Review)
 end
 
@@ -206,6 +208,68 @@ function Review:restore_fold(row)
 	end
 end
 
+---Find the placement whose hunk covers buffer `row` (0-indexed): either an added
+---line of the hunk or its deletion fold anchor.
+---@param self Review
+---@param row integer 0-indexed buffer row
+---@return Placement? placement
+function Review:hunk_at_row(row)
+	for _, p in ipairs(self.placements) do
+		if p.fold and p.fold.anchor_row == row then
+			return p
+		end
+		for _, r in ipairs(p.adds or {}) do
+			if r == row then
+				return p
+			end
+		end
+	end
+	return nil
+end
+
+---Reject the hunk covering buffer `row`: drop the AI change for that hunk's
+---region so the buffer reflects `U` there. For a pure-add hunk this removes
+---the added lines; a deletion fold is restored as real text. Marks the hunk
+---'rejected'. No-op if no hunk covers `row` or it is already rejected.
+---@param self Review
+---@param row integer 0-indexed buffer row
+function Review:reject_hunk(row)
+	local p = self:hunk_at_row(row)
+	if not p or self.hunk_status[p.hunk_id] == "rejected" then
+		return
+	end
+	local adds = p.adds or {}
+	local first = p.fold and p.fold.anchor_row + 1 or adds[1]
+	local last = adds[#adds] or (p.fold and p.fold.anchor_row)
+	if not first then
+		self.hunk_status[p.hunk_id] = "rejected"
+		return
+	end
+
+	local replacement = p.fold and p.fold.lines or {}
+	vim.api.nvim_buf_set_lines(self.buf, first, last + 1, false, replacement)
+	local removed = (last - first + 1)
+	local added = #replacement
+	local delta = added - removed
+	p.adds = {}
+	p.fold = nil
+	self.expanded[p.hunk_id] = nil
+	self.hunk_status[p.hunk_id] = "rejected"
+	if delta ~= 0 then
+		for _, q in ipairs(self.placements) do
+			if q.fold and q.fold.anchor_row > last then
+				q.fold.anchor_row = q.fold.anchor_row + delta
+			end
+			for j, r in ipairs(q.adds or {}) do
+				if r > last then
+					q.adds[j] = r + delta
+				end
+			end
+		end
+	end
+	self:render()
+end
+
 ---Install the review-buffer keymaps on `self.buf`.
 ---Reads the configured keys from `codeforge.config.keymaps`.
 ---@param self Review
@@ -229,6 +293,10 @@ function Review:setup_keymaps()
 		local row = vim.api.nvim_win_get_cursor(0)[1] - 1 -- to 0-indexed
 		self:restore_fold(row)
 	end, "CodeForge: restore deleted lines")
+	map(cfg.reject_hunk, function()
+		local row = vim.api.nvim_win_get_cursor(0)[1] - 1 -- to 0-indexed
+		self:reject_hunk(row)
+	end, "CodeForge: reject hunk")
 end
 
 ---@param self Review
