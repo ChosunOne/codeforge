@@ -209,7 +209,6 @@ T["reject with coordinate drift restores the right U lines"] = function()
 	F.seed_change(path, O, { hunk })
 
 	local buf = open_review(path)
-	local n = ns()
 	Q.expect_lines("P", child.api.nvim_buf_get_lines(buf, 0, -1, false), { "a", "b", "C", "d", "e" })
 
 	local win = Q.win_for_buf(buf)
@@ -226,6 +225,56 @@ T["reject with coordinate drift restores the right U lines"] = function()
 		hunk_status(path, "hunk-drift") == "rejected",
 		true,
 		{ fail_reason = "hunk should be marked 'rejected'" }
+	)
+end
+
+T["accept merges U's region edits with the proposal (clean 3-way)"] = function()
+	local O = { "a", "p", "m", "q", "d" }
+	local U = { "a", "p", "m", "Q", "d" }
+	local path = F.tmp_path()
+	child.fn.writefile(O, path)
+	child.cmd("edit " .. path)
+	local pre_buf = Q.find_buf(path)
+	child.api.nvim_buf_set_lines(pre_buf, 0, -1, false, U)
+	local hunk = {
+		id = "hunk-acc",
+		old_start = 2,
+		old_lines = 3,
+		new_start = 2,
+		new_lines = 3,
+		lines = { "-p", "-m", "-q", "+P", "+m", "+q" },
+	}
+	F.seed_change(path, O, { hunk })
+
+	local buf = open_review(path)
+	local n = ns()
+	Q.expect_lines("P", child.api.nvim_buf_get_lines(buf, 0, -1, false), { "a", "P", "m", "q", "d" })
+
+	MiniTest.expect.equality(
+		F.has_keymap(buf, "<C-x>a"),
+		true,
+		{ fail_reason = "no <C-x>a keymap on the review buffer" }
+	)
+
+	local win = Q.win_for_buf(buf)
+	child.api.nvim_set_current_win(win)
+	child.api.nvim_win_set_cursor(win, { 2, 0 }) -- row 1, the added line "P"
+	child.type_keys("<C-x>a")
+
+	Q.expect_lines(
+		"after accept (combined U+P)",
+		child.api.nvim_buf_get_lines(buf, 0, -1, false),
+		{ "a", "P", "m", "Q", "d" }
+	)
+	MiniTest.expect.equality(
+		hunk_status(path, "hunk-acc") == "accepted",
+		true,
+		{ fail_reason = "hunk should be marked 'accepted'" }
+	)
+	MiniTest.expect.equality(
+		Q.fold_at(buf, n, 0) == nil,
+		true,
+		{ fail_reason = "deletion fold should be removed after accept" }
 	)
 end
 

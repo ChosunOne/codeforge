@@ -8,6 +8,7 @@ M.config = {
 		toggle_fold = "<C-x>t",
 		restore = "<C-x>r",
 		reject_hunk = "<C-x>j",
+		accept_hunk = "<C-x>a",
 	},
 }
 M._initialized = false

@@ -11,6 +11,12 @@ local M = {}
 ---@field o_start integer 1-indexed start (inclusive) in other
 ---@field o_count integer number of other lines
 
+---Result of a 3-way merge via `git merge-file`
+---@class MergeResult
+---@field ok boolean true if merged cleanly
+---@field conflict boolean true if git merge-file reported conflicts
+---@field lines string[] merged content (may contain conflict markers if conflict)
+
 ---Build the ordered list of correspondence blocks between `base` and `other`
 ---from `diff_regions(base, other)`.
 ---@param base string[]
@@ -29,7 +35,7 @@ local function align_blocks(base, other)
 				kind = "unchanged",
 				b_start = bpos,
 				b_count = ub_end - bpos + 1,
-				o_start = opus,
+				o_start = opos,
 				o_count = uo_end - opos + 1,
 			})
 		end
@@ -138,6 +144,27 @@ function M.region_in(base, other, start, count)
 		end
 	end
 	return out
+end
+
+---Run `git merge-file -p ours base theirs` and return the result.
+---@param ours string[]
+---@param base string[]
+---@param theirs string[]
+---@return MergeResult
+function M.merge3(ours, base, theirs)
+	local fa, fb, fc = vim.fn.tempname(), vim.fn.tempname(), vim.fn.tempname()
+	vim.fn.writefile(ours, fa)
+	vim.fn.writefile(base, fb)
+	vim.fn.writefile(theirs, fc)
+	local out = vim.fn.systemlist({ "git", "merge-file", "-p", fa, fb, fc })
+	local code = vim.v.shell_error
+	vim.fn.delete(fa)
+	vim.fn.delete(fb)
+	vim.fn.delete(fc)
+	if code < 0 then
+		error("codeforge: git merge-file failed: " .. table.concat(out, "\n"))
+	end
+	return { ok = (code == 0), conflict = (code > 0), lines = out }
 end
 
 return M

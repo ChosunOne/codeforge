@@ -252,14 +252,52 @@ function Review:reject_hunk(row)
 	end
 
 	local replacement = merge.region_in(self.base_content, self.buf_snapshot, p.region_start, p.region_count)
+	self:_apply_region(p, first, last, replacement)
+	self.hunk_status[p.hunk_id] = "rejected"
+	self:render()
+end
+
+function Review:accept_hunk(row)
+	local p = self:hunk_at_row(row)
+	if not p or self.hunk_status[p.hunk_id] == "accepted" or self.hunk_status[p.hunk_id] == "rejected" then
+		return
+	end
+	local adds = p.adds or {}
+	local first = p.fold and p.fold.anchor_row + 1 or adds[1]
+	local last = adds[#adds] or (p.fold and p.fold.anchor_row)
+	if not first then
+		self.hunk_status[p.hunk_id] = "accepted"
+		return
+	end
+
+	local ours = merge.region_in(self.base_content, self.buf_snapshot, p.region_start, p.region_count)
+	local base = merge.region_in(self.base_content, self.base_content, p.region_start, p.region_count)
+	local cur = vim.api.nvim_buf_get_lines(self.buf, first, last + 1, false)
+	local res = merge.merge3(ours, base, cur)
+	if res.conflict then
+		self.hunk_status[p.hunk_id] = "conflicted"
+		-- TODO: conflict resolution
+		return
+	end
+	self:_apply_region(p, first, last, res.lines)
+	self.hunk_status[p.hunk_id] = "accepted"
+	self:render()
+end
+
+---Replace the live buffer region `[first, last]` (0-indexed, inclusive)
+---with `replacement`, clear this placement's decorations, and shift
+---later placements by the line-count delta.
+---@param self Review
+---@param p Placement
+---@param first integer 0-indexed first row
+---@param last integer 0-indexed last row
+---@param replacement string[]
+function Review:_apply_region(p, first, last, replacement)
 	vim.api.nvim_buf_set_lines(self.buf, first, last + 1, false, replacement)
-	local removed = (last - first + 1)
-	local added = #replacement
-	local delta = added - removed
+	local delta = #replacement - (last - first + 1)
 	p.adds = {}
 	p.fold = nil
 	self.expanded[p.hunk_id] = nil
-	self.hunk_status[p.hunk_id] = "rejected"
 	if delta ~= 0 then
 		for _, q in ipairs(self.placements) do
 			if q.fold and q.fold.anchor_row > last then
@@ -272,7 +310,6 @@ function Review:reject_hunk(row)
 			end
 		end
 	end
-	self:render()
 end
 
 ---Install the review-buffer keymaps on `self.buf`.
@@ -302,6 +339,10 @@ function Review:setup_keymaps()
 		local row = vim.api.nvim_win_get_cursor(0)[1] - 1 -- to 0-indexed
 		self:reject_hunk(row)
 	end, "CodeForge: reject hunk")
+	map(cfg.accept_hunk, function()
+		local row = vim.api.nvim_win_get_cursor(0)[1] - 1 -- to 0-indexed
+		self:accept_hunk(row)
+	end, "CodeForge: accept hunk")
 end
 
 ---@param self Review
