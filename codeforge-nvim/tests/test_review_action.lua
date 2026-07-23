@@ -130,4 +130,103 @@ T["reject on a replace hunk restores the original line and marks it rejected"] =
 	)
 end
 
+T["reject on a delete-only hunk restores the removed lines"] = function()
+	local O = { "a", "b", "c" }
+	local path = F.tmp_path()
+	child.fn.writefile(O, path)
+	child.cmd("edit " .. path)
+	local hunk = F.delete_hunk("hunk-del", 2, { "b" })
+	F.seed_change(path, O, { hunk })
+
+	local buf = open_review(path)
+	local n = ns()
+	Q.expect_lines("P", child.api.nvim_buf_get_lines(buf, 0, -1, false), { "a", "c" })
+	MiniTest.expect.equality(
+		Q.fold_at(buf, n, 0) ~= nil,
+		true,
+		{ fail_reason = "deletion fold should be on row 0 before reject" }
+	)
+	MiniTest.expect.equality(
+		Q.hl_at(buf, n, 1) == nil,
+		true,
+		{ fail_reason = "row 1 should not carry an add highlight (delete-only hunk)" }
+	)
+
+	local win = Q.win_for_buf(buf)
+	child.api.nvim_set_current_win(win)
+	child.api.nvim_win_set_cursor(win, { 1, 0 }) -- row 0, the fold anchor "a"
+	child.type_keys("<C-x>j")
+
+	Q.expect_lines("after reject", child.api.nvim_buf_get_lines(buf, 0, -1, false), { "a", "b", "c" })
+	MiniTest.expect.equality(
+		hunk_status(path, "hunk-del") == "rejected",
+		true,
+		{ fail_reason = "hunk should be marked 'rejected'" }
+	)
+	MiniTest.expect.equality(
+		Q.fold_at(buf, n, 0) == nil,
+		true,
+		{ fail_reason = "deletion fold should be removed after reject" }
+	)
+end
+
+T["reject restores the user's pre-review edits (U), not the base (O)"] = function()
+	local O = { "a", "b", "c" }
+	local U = { "a", "b-user", "c" }
+	local path = F.tmp_path()
+	child.fn.writefile(O, path)
+	child.cmd("edit " .. path)
+	local pre_buf = Q.find_buf(path)
+	child.api.nvim_buf_set_lines(pre_buf, 0, -1, false, U)
+	local hunk = F.replace_hunk("hunk-rep", 2, "b", "B")
+	F.seed_change(path, O, { hunk })
+
+	local buf = open_review(path)
+	Q.expect_lines("P", child.api.nvim_buf_get_lines(buf, 0, -1, false), { "a", "B", "c" })
+
+	local win = Q.win_for_buf(buf)
+	child.api.nvim_set_current_win(win)
+	child.api.nvim_win_set_cursor(win, { 2, 0 }) -- row 1, the added line "B"
+	child.type_keys("<C-x>j")
+
+	Q.expect_lines("after reject (U, not O)", child.api.nvim_buf_get_lines(buf, 0, -1, false), { "a", "b-user", "c" })
+	MiniTest.expect.equality(
+		hunk_status(path, "hunk-rep") == "rejected",
+		true,
+		{ fail_reason = "hunk should be marked 'rejected'" }
+	)
+end
+
+T["reject with coordinate drift restores the right U lines"] = function()
+	local O = { "a", "b", "c", "d", "e" }
+	local U = { "a", "USER", "b", "c-USER", "d", "e" }
+	local path = F.tmp_path()
+	child.fn.writefile(O, path)
+	child.cmd("edit " .. path)
+	local pre_buf = Q.find_buf(path)
+	child.api.nvim_buf_set_lines(pre_buf, 0, -1, false, U)
+	local hunk = F.replace_hunk("hunk-drift", 3, "c", "C")
+	F.seed_change(path, O, { hunk })
+
+	local buf = open_review(path)
+	local n = ns()
+	Q.expect_lines("P", child.api.nvim_buf_get_lines(buf, 0, -1, false), { "a", "b", "C", "d", "e" })
+
+	local win = Q.win_for_buf(buf)
+	child.api.nvim_set_current_win(win)
+	child.api.nvim_win_set_cursor(win, { 3, 0 }) -- row 2, the added line "C"
+	child.type_keys("<C-x>j")
+
+	Q.expect_lines(
+		"after reject (drifted + edited U)",
+		child.api.nvim_buf_get_lines(buf, 0, -1, false),
+		{ "a", "b", "c-USER", "d", "e" }
+	)
+	MiniTest.expect.equality(
+		hunk_status(path, "hunk-drift") == "rejected",
+		true,
+		{ fail_reason = "hunk should be marked 'rejected'" }
+	)
+end
+
 return T

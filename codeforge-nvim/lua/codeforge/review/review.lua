@@ -1,5 +1,6 @@
 local state = require("codeforge.state")
 local diff = require("codeforge.review.diff")
+local merge = require("codeforge.review.merge")
 
 ---@class Review
 ---@field path string
@@ -37,6 +38,8 @@ end
 ---@field hunk_id string
 ---@field adds integer[]?
 ---@field fold Fold?
+---@field region_start integer 1-indexed start of the hunk's region in O
+---@field region_count integer number of O lines in the hunk's region
 
 ---@class Fold
 ---@field anchor_row integer
@@ -121,6 +124,8 @@ function Review:apply_hunks()
 			hunk_id = h.id,
 			adds = adds,
 			fold = fold,
+			region_start = h.old_start,
+			region_count = h.old_lines,
 		}
 	end
 
@@ -246,7 +251,7 @@ function Review:reject_hunk(row)
 		return
 	end
 
-	local replacement = p.fold and p.fold.lines or {}
+	local replacement = merge.region_in(self.base_content, self.buf_snapshot, p.region_start, p.region_count)
 	vim.api.nvim_buf_set_lines(self.buf, first, last + 1, false, replacement)
 	local removed = (last - first + 1)
 	local added = #replacement
