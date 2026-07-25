@@ -424,10 +424,10 @@ T["<C-x>c resolve flow: take ours then confirm yields U[R] and clears the confli
 	)
 
 	MiniTest.expect.equality(F.has_keymap(buf, "<C-x>o"), true, { fail_reason = "no <C-x>o (take ours) keymap" })
-	MiniTest.expect.equality(F.has_keymap(buf, "<C-x>d"), true, { fail_reason = "no <C-x>d (confirm) keymap" })
+	MiniTest.expect.equality(F.has_keymap(buf, "<C-x>f"), true, { fail_reason = "no <C-x>d (confirm) keymap" })
 
 	child.type_keys("<C-x>o")
-	child.type_keys("<C-x>d")
+	child.type_keys("<C-x>f")
 
 	Q.expect_lines("after resolve (take ours)", child.api.nvim_buf_get_lines(buf, 0, -1, false), { "a", "b-user", "c" })
 	MiniTest.expect.equality(
@@ -452,6 +452,75 @@ T["<C-x>c resolve flow: take ours then confirm yields U[R] and clears the confli
 		Q.hl_at(buf, n, 1) == nil,
 		true,
 		{ fail_reason = "add highlight should be removed after resolve" }
+	)
+end
+
+T["resolve: take base (O) then confirm reverts the region to O[R]"] = function()
+	local O = { "a", "b", "c" }
+	local U = { "a", "b-user", "c" }
+	local path = F.tmp_path()
+	child.fn.writefile(O, path)
+	child.cmd("edit " .. path)
+	local pre_buf = Q.find_buf(path)
+	child.api.nvim_buf_set_lines(pre_buf, 0, -1, false, U)
+	local hunk = F.replace_hunk("hunk-conf", 2, "b", "B")
+	F.seed_change(path, O, { hunk })
+
+	local buf = open_review(path)
+	local win = Q.win_for_buf(buf)
+	child.api.nvim_set_current_win(win)
+	child.api.nvim_win_set_cursor(win, { 2, 0 })
+	child.type_keys("<C-x>a") -- conflict
+	child.type_keys("<C-x>c") -- enter resolve
+	child.type_keys("<C-x>p") -- take base (O)
+	child.type_keys("<C-x>f") -- confirm
+
+	Q.expect_lines("after resolve (take base)", child.api.nvim_buf_get_lines(buf, 0, -1, false), { "a", "b", "c" })
+	MiniTest.expect.equality(
+		hunk_status(path, "hunk-conf") == "accepted",
+		true,
+		{ fail_reason = "hunk should be 'accepted' after confirm" }
+	)
+end
+
+T["dismiss assembles final: keeps resolved hunks, reverts pending to U"] = function()
+	local O = { "a", "b", "c", "d" }
+	local path = F.tmp_path()
+	child.fn.writefile(O, path)
+	child.cmd("edit " .. path)
+	local h1 = F.replace_hunk("hunk-keep", 2, "b", "B")
+	local h2 = F.insert_hunk("hunk-pending", 5, { "D2" })
+	F.seed_change(path, O, { h1, h2 })
+
+	local buf = open_review(path)
+	local n = ns()
+	Q.expect_lines("P", child.api.nvim_buf_get_lines(buf, 0, -1, false), { "a", "B", "c", "d", "D2" })
+
+	local win = Q.win_for_buf(buf)
+	child.api.nvim_set_current_win(win)
+	child.api.nvim_win_set_cursor(win, { 2, 0 })
+	child.type_keys("<C-x>a")
+	MiniTest.expect.equality(
+		hunk_status(path, "hunk-keep") == "accepted",
+		true,
+		{ fail_reason = "precondition: hunk1 should be accepted" }
+	)
+	Q.expect_lines("hunk2 still pending", child.api.nvim_buf_get_lines(buf, 0, -1, false), { "a", "B", "c", "d", "D2" })
+
+	MiniTest.expect.equality(F.has_keymap(buf, "<C-x>d"), true, { fail_reason = "no <C-x>d (dismiss) keymap" })
+
+	child.type_keys("<C-x>d")
+
+	Q.expect_lines("final after dismiss", child.api.nvim_buf_get_lines(buf, 0, -1, false), { "a", "B", "c", "d" })
+	MiniTest.expect.equality(
+		child.lua_get(string.format([[require("codeforge.state").get_review(%s) == nil]], vim.inspect(path))) == true,
+		true,
+		{ fail_reason = "review state should be cleared after dismiss" }
+	)
+	MiniTest.expect.equality(
+		#child.api.nvim_buf_get_extmarks(buf, n, 0, -1, {}) == 0,
+		true,
+		{ fail_reason = "all extmarks should be cleared after dismiss" }
 	)
 end
 

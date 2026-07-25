@@ -292,7 +292,7 @@ end
 ---Enter native 3-way diff resolution for the conflicted hunk covering `row`.
 ---Opens read-only scratch buffers for ours (U[R]) and base (O[R]), diffthis's
 ---the live buffer + both scratches, and installs resolve keymaps (<C-x>o take
----ours, <C-x>p take theirs, <C-x>d confirm). No-op if the hunk is not conflicted
+---ours, <C-x>p take theirs, <C-x>f confirm). No-op if the hunk is not conflicted
 ---@param self Review
 ---@param row integer 0-indexed buffer row
 function Review:resolve_hunk(row)
@@ -440,14 +440,14 @@ function Review:_setup_resolve_keymaps()
 	map("<C-x>p", function()
 		self:_take_side("base")
 	end, "CodeForge: take base (O)")
-	map("<C-x>d", function()
+	map("<C-x>f", function()
 		self:confirm_resolve()
 	end, "CodeForge: confirm resolve")
 end
 
 ---Remove keymaps for conflict resolution
 function Review:_teardown_resolve_keymaps()
-	for _, k in ipairs({ "<C-x>o", "<C-x>p", "<C-x>d" }) do
+	for _, k in ipairs({ "<C-x>o", "<C-x>p", "<C-x>f" }) do
 		pcall(vim.keymap.del, "n", k, { buffer = self.buf })
 	end
 end
@@ -535,6 +535,9 @@ function Review:setup_keymaps()
 		local row = vim.api.nvim_win_get_cursor(0)[1] - 1 -- to 0-indexed
 		self:resolve_hunk(row)
 	end, "CodeForge: resolve conflicted hunk")
+	map(cfg.dismiss, function()
+		self:dismiss()
+	end, "CodeForge: dismiss review")
 end
 
 ---@param self Review
@@ -548,8 +551,24 @@ end
 
 ---@param self Review
 function Review:dismiss()
+	if self._resolve then
+		self:_close_resolve()
+	end
+
 	if self.buf and vim.api.nvim_buf_is_valid(self.buf) then
-		vim.api.nvim_buf_set_lines(self.buf, 0, -1, false, self.buf_snapshot)
+		for _, p in ipairs(self.placements) do
+			local st = self.hunk_status[p.hunk_id]
+			if st ~= "accepted" and st ~= "rejected" then
+				local adds = p.adds or {}
+				local first = p.fold and p.fold.anchor_row + 1 or adds[1]
+				local last = adds[#adds] or (p.fold and p.fold.anchor_row)
+				if first then
+					local replacement =
+						merge.region_in(self.base_content, self.buf_snapshot, p.region_start, p.region_count)
+					self:_apply_region(p, first, last, replacement)
+				end
+			end
+		end
 		vim.api.nvim_buf_clear_namespace(self.buf, diff.namespace, 0, -1)
 	end
 	state.clear_review(self.path)

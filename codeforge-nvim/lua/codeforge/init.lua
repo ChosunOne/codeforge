@@ -10,6 +10,7 @@ M.config = {
 		reject_hunk = "<C-x>j",
 		accept_hunk = "<C-x>a",
 		resolve_hunk = "<C-x>c",
+		dismiss = "<C-x>d",
 	},
 }
 M._initialized = false
