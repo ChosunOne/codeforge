@@ -238,6 +238,90 @@ function Review:hunk_at_row(row)
 	return nil
 end
 
+---The anchor row (0-indexed) of a placement's hunk: its deletion fold if it
+---has one, else its first added line.
+---@param p Placement
+---@return integer?
+local function hunk_anchor(p)
+	if p.fold then
+		return p.fold.anchor_row
+	end
+	if p.adds and #p.adds > 0 then
+		return p.adds[1]
+	end
+	return nil
+end
+
+---The list of placements whose hunk is still pending in buffer order.
+---@param self Review
+---@return Placement[]
+function Review:pending_hunks()
+	local out = {}
+	for _, p in ipairs(self.placements) do
+		local st = self.hunk_status[p.hunk_id]
+		if st ~= "accepted" and st ~= "rejected" then
+			out[#out + 1] = p
+		end
+	end
+
+	return out
+end
+
+---Move the cursor to the next pending hunk's anchor (wraps to the first).
+---@param self Review
+function Review:next_hunk()
+	local pending = self:pending_hunks()
+	if #pending == 0 then
+		return
+	end
+	local cur = vim.api.nvim_win_get_cursor(0)[1] - 1
+	local best = nil
+	for _, p in ipairs(pending) do
+		local a = hunk_anchor(p)
+		if a ~= nil and a > cur then
+			best = a
+			break
+		end
+	end
+	if best == nil then
+		best = hunk_anchor(pending[1])
+	end
+	if best ~= nil then
+		vim.api.nvim_win_set_cursor(0, { best + 1, 0 })
+	end
+end
+
+---Move the cursor to the previous pending hunk's anchor (wraps to the last)
+---@param self Review
+function Review:prev_hunk()
+	local pending = self:pending_hunks()
+	if #pending == 0 then
+		return
+	end
+	local cur = vim.api.nvim_win_get_cursor(0)[1] - 1
+	local cur_anchor = nil
+	for _, p in ipairs(pending) do
+		local a = hunk_anchor(p)
+		if a ~= nil and a <= cur then
+			cur_anchor = a
+		end
+	end
+	local best = nil
+	for i = #pending, 1, -1 do
+		local a = hunk_anchor(pending[i])
+		if a ~= nil and cur_anchor ~= nil and a < cur_anchor then
+			best = a
+			break
+		end
+	end
+	if best == nil then
+		best = hunk_anchor(pending[#pending])
+	end
+	if best ~= nil then
+		vim.api.nvim_win_set_cursor(0, { best + 1, 0 })
+	end
+end
+
 ---Reject the hunk covering buffer `row`: drop the AI change for that hunk's
 ---region so the buffer reflects `U` there. For a pure-add hunk this removes
 ---the added lines; a deletion fold is restored as real text. Marks the hunk
@@ -538,6 +622,12 @@ function Review:setup_keymaps()
 	map(cfg.dismiss, function()
 		self:dismiss()
 	end, "CodeForge: dismiss review")
+	map(cfg.next_hunk, function()
+		self:next_hunk()
+	end, "CodeForge: next hunk")
+	map(cfg.prev_hunk, function()
+		self:prev_hunk()
+	end, "CodeForge: previous hunk")
 end
 
 ---@param self Review

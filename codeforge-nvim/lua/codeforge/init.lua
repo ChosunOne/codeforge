@@ -11,6 +11,8 @@ M.config = {
 		accept_hunk = "<C-x>a",
 		resolve_hunk = "<C-x>c",
 		dismiss = "<C-x>d",
+		next_hunk = "<C-x>n",
+		prev_hunk = "<C-x>b",
 	},
 }
 M._initialized = false
