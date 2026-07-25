@@ -65,6 +65,17 @@ function M.is_sidebar_buf(buf)
 	return child.api.nvim_buf_get_option(buf, "filetype") == "codeforge"
 end
 
+function M.focus_buf(buf)
+	for _, w in ipairs(child.api.nvim_list_wins()) do
+		if child.api.nvim_win_get_buf(w) == buf then
+			child.api.nvim_set_current_win(w)
+			child.api.nvim_buf_set_name(buf, "review")
+			child.o.laststatus = 0
+			return
+		end
+	end
+end
+
 ---All extmarks in `buf` / `ns` with details.
 ---@param buf integer
 ---@param ns integer

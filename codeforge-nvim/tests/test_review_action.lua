@@ -83,6 +83,9 @@ T["reject on a pure-insert hunk removes the added lines and marks it rejected"] 
 		true,
 		{ fail_reason = "add highlight should be removed after reject" }
 	)
+
+	Q.focus_buf(buf)
+	MiniTest.expect.reference_screenshot(child.get_screenshot())
 end
 
 T["reject on a replace hunk restores the original line and marks it rejected"] = function()
@@ -128,6 +131,9 @@ T["reject on a replace hunk restores the original line and marks it rejected"] =
 		true,
 		{ fail_reason = "add highlight should be removed after reject" }
 	)
+
+	Q.focus_buf(buf)
+	MiniTest.expect.reference_screenshot(child.get_screenshot())
 end
 
 T["reject on a delete-only hunk restores the removed lines"] = function()
@@ -168,6 +174,9 @@ T["reject on a delete-only hunk restores the removed lines"] = function()
 		true,
 		{ fail_reason = "deletion fold should be removed after reject" }
 	)
+
+	Q.focus_buf(buf)
+	MiniTest.expect.reference_screenshot(child.get_screenshot())
 end
 
 T["reject restores the user's pre-review edits (U), not the base (O)"] = function()
@@ -195,6 +204,9 @@ T["reject restores the user's pre-review edits (U), not the base (O)"] = functio
 		true,
 		{ fail_reason = "hunk should be marked 'rejected'" }
 	)
+
+	Q.focus_buf(buf)
+	MiniTest.expect.reference_screenshot(child.get_screenshot())
 end
 
 T["reject with coordinate drift restores the right U lines"] = function()
@@ -226,6 +238,9 @@ T["reject with coordinate drift restores the right U lines"] = function()
 		true,
 		{ fail_reason = "hunk should be marked 'rejected'" }
 	)
+
+	Q.focus_buf(buf)
+	MiniTest.expect.reference_screenshot(child.get_screenshot())
 end
 
 T["accept merges U's region edits with the proposal (clean 3-way)"] = function()
@@ -276,6 +291,9 @@ T["accept merges U's region edits with the proposal (clean 3-way)"] = function()
 		true,
 		{ fail_reason = "deletion fold should be removed after accept" }
 	)
+
+	Q.focus_buf(buf)
+	MiniTest.expect.reference_screenshot(child.get_screenshot())
 end
 
 return T

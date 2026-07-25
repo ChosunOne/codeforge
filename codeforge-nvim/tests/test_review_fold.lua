@@ -118,6 +118,48 @@ T["toggle_fold expands a collapsed deletion fold to show the deleted lines"] = f
 		false,
 		{ fail_reason = "expanded fold should no longer show the 'N line(s) removed' hint" }
 	)
+
+	Q.focus_buf(buf)
+	MiniTest.expect.reference_screenshot(child.get_screenshot())
+end
+
+T["toggle_fold collapses an expanded fold back to the hint (round-trip)"] = function()
+	local O = { "a", "b", "c" }
+	local path = F.tmp_path()
+	child.fn.writefile(O, path)
+	child.cmd("edit " .. path)
+	local hunk = F.delete_hunk("hunk-del", 2, { "b" })
+	F.seed_change(path, O, { hunk })
+
+	local buf = open_review(path)
+	local n = ns()
+	Q.expect_lines("P", child.api.nvim_buf_get_lines(buf, 0, -1, false), { "a", "c" })
+
+	-- expand
+	toggle_fold(path, 0)
+	MiniTest.expect.equality(
+		virt_line_is(Q.fold_at(buf, n, 0), "b"),
+		true,
+		{ fail_reason = "expand should show deleted line 'b'" }
+	)
+
+	-- collapse (toggle again)
+	toggle_fold(path, 0)
+	MiniTest.expect.equality(
+		virt_line_has(Q.fold_at(buf, n, 0), "1 line removed"),
+		true,
+		{ fail_reason = "collapse should restore the '1 line removed' hint" }
+	)
+	MiniTest.expect.equality(
+		virt_line_is(Q.fold_at(buf, n, 0), "b"),
+		false,
+		{ fail_reason = "collapse should hide the deleted line 'b' again" }
+	)
+	-- buffer text unchanged by toggling (fold is virtual)
+	Q.expect_lines("P after round-trip", child.api.nvim_buf_get_lines(buf, 0, -1, false), { "a", "c" })
+
+	Q.focus_buf(buf)
+	MiniTest.expect.reference_screenshot(child.get_screenshot())
 end
 
 T["pressing <C-x>t on a fold anchor expands the fold"] = function()
@@ -141,6 +183,8 @@ T["pressing <C-x>t on a fold anchor expands the fold"] = function()
 		end
 	end
 
+	MiniTest.expect.equality(found, true, { fail_reason = "no <C-x>t keymap on the review buffer" })
+
 	MiniTest.expect.equality(
 		virt_line_has(Q.fold_at(buf, n, 0), "1 line removed"),
 		true,
@@ -158,6 +202,9 @@ T["pressing <C-x>t on a fold anchor expands the fold"] = function()
 			false,
 			{ fail_reason = "<C-x>t should remove the collapsed hint" }
 		)
+
+		Q.focus_buf(buf)
+		MiniTest.expect.reference_screenshot(child.get_screenshot())
 	end
 end
 
@@ -198,6 +245,9 @@ T["pressing <C-x>r restores the deleted lines to real buffer text"] = function()
 		true,
 		{ fail_reason = "fold extmark should be removed after restore" }
 	)
+
+	Q.focus_buf(buf)
+	MiniTest.expect.reference_screenshot(child.get_screenshot())
 end
 
 T["restore shifts later add highlights to keep them on the right line"] = function()

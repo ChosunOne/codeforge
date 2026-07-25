@@ -41,6 +41,9 @@ T["open loads the proposal into the real file buffer"] = function()
 		child.lua_get(string.format([[require("codeforge.state").get_review(%s).buf_snapshot]], vim.inspect(path)))
 
 	Q.expect_lines("snapshot U", U, O)
+
+	Q.focus_buf(buf)
+	MiniTest.expect.reference_screenshot(child.get_screenshot())
 end
 
 T["open snapshots the user's unsaved edits as U"] = function()
@@ -62,6 +65,9 @@ T["open snapshots the user's unsaved edits as U"] = function()
 	local buf = Q.find_buf(path)
 	local got = child.api.nvim_buf_get_lines(buf, 0, -1, false)
 	Q.expect_lines("proposal P", got, { "a", "b", "B", "c" })
+
+	Q.focus_buf(buf)
+	MiniTest.expect.reference_screenshot(child.get_screenshot())
 end
 
 T["open reuses an already-loaded buffer"] = function()

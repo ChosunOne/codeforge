@@ -14,17 +14,6 @@ local function ns()
 	return child.lua_get([[require("codeforge.review.diff").namespace]])
 end
 
-local function focus_buf(buf)
-	for _, w in ipairs(child.api.nvim_list_wins()) do
-		if child.api.nvim_win_get_buf(w) == buf then
-			child.api.nvim_set_current_win(w)
-			child.api.nvim_buf_set_name(buf, "review")
-			child.o.laststatus = 0
-			return
-		end
-	end
-end
-
 local function virt_text(details)
 	if not details or not details.virt_lines then
 		return ""
@@ -98,7 +87,7 @@ T["added lines render with a DiffAdd highlight and a sign"] = function()
 	MiniTest.expect.equality(#Q.extmarks_at(buf, n, 2, 0), 0, { fail_reason = "context line 2 decorated" })
 	MiniTest.expect.equality(#Q.extmarks_at(buf, n, 3, 0), 0, { fail_reason = "context line 3 decorated" })
 
-	focus_buf(buf)
+	Q.focus_buf(buf)
 	MiniTest.expect.reference_screenshot(child.get_screenshot())
 end
 
@@ -136,7 +125,7 @@ T["a hunk that adds and deletes renders both a fold and a highlight"] = function
 	MiniTest.expect.equality(#Q.extmarks_at(buf, n, 3, 0), 0, { fail_reason = "context line 3 decorated" })
 	MiniTest.expect.equality(#Q.extmarks_at(buf, n, 4, 0), 0, { fail_reason = "context line 4 decorated" })
 
-	focus_buf(buf)
+	Q.focus_buf(buf)
 	MiniTest.expect.reference_screenshot(child.get_screenshot())
 end
 
@@ -169,7 +158,7 @@ T["deleted lines render as a collapsed virtual fold"] = function()
 		)
 	end
 
-	focus_buf(buf)
+	Q.focus_buf(buf)
 	MiniTest.expect.reference_screenshot(child.get_screenshot())
 end
 
@@ -193,7 +182,7 @@ T["deletion fold is collapsed by default"] = function()
 		{ fail_reason = "deleted text 'b' shown in collapsed fold" }
 	)
 
-	focus_buf(buf)
+	Q.focus_buf(buf)
 	MiniTest.expect.reference_screenshot(child.get_screenshot())
 end
 
@@ -224,7 +213,7 @@ T["inserted lines render as added lines with highlight"] = function()
 	MiniTest.expect.equality(#Q.extmarks_at(buf, n, 0, 0), 0, { fail_reason = "context line 0 decorated" })
 	MiniTest.expect.equality(#Q.extmarks_at(buf, n, 3, 0), 0, { fail_reason = "context line 3 decorated" })
 
-	focus_buf(buf)
+	Q.focus_buf(buf)
 	MiniTest.expect.reference_screenshot(child.get_screenshot())
 end
 
@@ -265,7 +254,7 @@ T["two separate hunks each render their own artifacts"] = function()
 	)
 	MiniTest.expect.equality(#Q.extmarks_at(buf, n, 4, 0), 0, { fail_reason = "context line 4 decorated" })
 
-	focus_buf(buf)
+	Q.focus_buf(buf)
 	MiniTest.expect.reference_screenshot(child.get_screenshot())
 end
 
@@ -289,7 +278,7 @@ T["deletion at the last line of the file renders a fold"] = function()
 		{ fail_reason = "no valid deletion fold for end of file deletion at row 1" }
 	)
 
-	focus_buf(buf)
+	Q.focus_buf(buf)
 	MiniTest.expect.reference_screenshot(child.get_screenshot())
 end
 
