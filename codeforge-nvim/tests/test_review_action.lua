@@ -296,4 +296,163 @@ T["accept merges U's region edits with the proposal (clean 3-way)"] = function()
 	MiniTest.expect.reference_screenshot(child.get_screenshot())
 end
 
+T["accept on a conflicting region marks it conflicted and leaves the buffer untouched"] = function()
+	local O = { "a", "b", "c" }
+	local U = { "a", "b-user", "c" }
+	local path = F.tmp_path()
+	child.fn.writefile(O, path)
+	child.cmd("edit " .. path)
+	local pre_buf = Q.find_buf(path)
+	child.api.nvim_buf_set_lines(pre_buf, 0, -1, false, U)
+	local hunk = F.replace_hunk("hunk-conf", 2, "b", "B")
+	F.seed_change(path, O, { hunk })
+
+	local buf = open_review(path)
+	local n = ns()
+	Q.expect_lines("P", child.api.nvim_buf_get_lines(buf, 0, -1, false), { "a", "B", "c" })
+	local win = Q.win_for_buf(buf)
+	child.api.nvim_set_current_win(win)
+	child.api.nvim_win_set_cursor(win, { 2, 0 }) -- row 1, the added line "B"
+
+	-- decorations present before accept
+	MiniTest.expect.equality(
+		Q.fold_at(buf, n, 0) ~= nil,
+		true,
+		{ fail_reason = "fold should be present before accept" }
+	)
+	MiniTest.expect.equality(
+		Q.hl_at(buf, n, 1) ~= nil,
+		true,
+		{ fail_reason = "add highlight should be present before accept" }
+	)
+
+	child.type_keys("<C-x>a")
+
+	MiniTest.expect.equality(
+		hunk_status(path, "hunk-conf") == "conflicted",
+		true,
+		{ fail_reason = "hunk should be marked 'conflicted'" }
+	)
+	Q.expect_lines("buffer unchanged on conflict", child.api.nvim_buf_get_lines(buf, 0, -1, false), { "a", "B", "c" })
+	MiniTest.expect.equality(
+		Q.fold_at(buf, n, 0) ~= nil,
+		true,
+		{ fail_reason = "fold should remain on conflict (unresolved)" }
+	)
+	MiniTest.expect.equality(
+		Q.hl_at(buf, n, 1) ~= nil,
+		true,
+		{ fail_reason = "add highlight should remain on conflict (unresolved)" }
+	)
+end
+
+T["<C-x>c resolve flow: take ours then confirm yields U[R] and clears the conflict"] = function()
+	local O = { "a", "b", "c" }
+	local U = { "a", "b-user", "c" }
+	local path = F.tmp_path()
+	child.fn.writefile(O, path)
+	child.cmd("edit " .. path)
+	local pre_buf = Q.find_buf(path)
+	child.api.nvim_buf_set_lines(pre_buf, 0, -1, false, U)
+	local hunk = F.replace_hunk("hunk-conf", 2, "b", "B")
+	F.seed_change(path, O, { hunk })
+
+	local buf = open_review(path)
+	local n = ns()
+	local win = Q.win_for_buf(buf)
+	child.api.nvim_set_current_win(win)
+	child.api.nvim_win_set_cursor(win, { 2, 0 }) -- row 1, the added line "B"
+
+	child.type_keys("<C-x>a")
+	MiniTest.expect.equality(
+		hunk_status(path, "hunk-conf") == "conflicted",
+		true,
+		{ fail_reason = "precondition: hunk should be conflicted" }
+	)
+
+	MiniTest.expect.equality(
+		F.has_keymap(buf, "<C-x>c"),
+		true,
+		{ fail_reason = "no <C-x>c keymap on the review buffer" }
+	)
+
+	child.type_keys("<C-x>c")
+
+	local scratches, ours_buf, base_buf = {}, nil, nil
+	for _, b in ipairs(child.api.nvim_list_bufs()) do
+		local name = child.api.nvim_buf_get_name(b)
+		if name:match("codeforge%.resolve") then
+			scratches[#scratches + 1] = b
+			local lines = child.api.nvim_buf_get_lines(b, 0, -1, false)
+			if lines[2] == "b-user" then
+				ours_buf = b
+			end
+			if lines[2] == "b" then
+				base_buf = b
+			end
+		end
+	end
+	MiniTest.expect.equality(
+		#scratches == 2,
+		true,
+		{ fail_reason = "resolve should open 2 scratch buffers (ours + base)" }
+	)
+	MiniTest.expect.equality(ours_buf ~= nil, true, { fail_reason = "ours scratch (U[R]) not found" })
+	MiniTest.expect.equality(base_buf ~= nil, true, { fail_reason = "base scratch (O[R]) not found" })
+	MiniTest.expect.equality(
+		child.api.nvim_buf_get_option(ours_buf, "modifiable") == false,
+		true,
+		{ fail_reason = "ours scratch should be read-only" }
+	)
+	MiniTest.expect.equality(
+		child.api.nvim_buf_get_option(base_buf, "modifiable") == false,
+		true,
+		{ fail_reason = "base scratch should be read-only" }
+	)
+	local function win_diff(b)
+		for _, w in ipairs(child.api.nvim_list_wins()) do
+			if child.api.nvim_win_get_buf(w) == b then
+				return child.api.nvim_win_get_option(w, "diff")
+			end
+		end
+		return false
+	end
+	MiniTest.expect.equality(
+		win_diff(buf) == true,
+		true,
+		{ fail_reason = "live buffer should be diffthis'd after <C-x>c" }
+	)
+
+	MiniTest.expect.equality(F.has_keymap(buf, "<C-x>o"), true, { fail_reason = "no <C-x>o (take ours) keymap" })
+	MiniTest.expect.equality(F.has_keymap(buf, "<C-x>d"), true, { fail_reason = "no <C-x>d (confirm) keymap" })
+
+	child.type_keys("<C-x>o")
+	child.type_keys("<C-x>d")
+
+	Q.expect_lines("after resolve (take ours)", child.api.nvim_buf_get_lines(buf, 0, -1, false), { "a", "b-user", "c" })
+	MiniTest.expect.equality(
+		hunk_status(path, "hunk-conf") == "accepted",
+		true,
+		{ fail_reason = "hunk should be 'accepted' after confirm" }
+	)
+	local remaining = 0
+	for _, b in ipairs(child.api.nvim_list_bufs()) do
+		if child.api.nvim_buf_get_name(b):match("codeforge%.resolve") then
+			remaining = remaining + 1
+		end
+	end
+	MiniTest.expect.equality(remaining == 0, true, { fail_reason = "scratch buffers should be closed after confirm" })
+	MiniTest.expect.equality(win_diff(buf) == false, true, { fail_reason = "diff should be off after confirm" })
+	MiniTest.expect.equality(
+		Q.fold_at(buf, n, 0) == nil,
+		true,
+		{ fail_reason = "fold should be removed after resolve" }
+	)
+	MiniTest.expect.equality(
+		Q.hl_at(buf, n, 1) == nil,
+		true,
+		{ fail_reason = "add highlight should be removed after resolve" }
+	)
+end
+
 return T

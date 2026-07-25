@@ -9,6 +9,7 @@ M.config = {
 		restore = "<C-x>r",
 		reject_hunk = "<C-x>j",
 		accept_hunk = "<C-x>a",
+		resolve_hunk = "<C-x>c",
 	},
 }
 M._initialized = false
