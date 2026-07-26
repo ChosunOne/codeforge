@@ -123,6 +123,41 @@ T["toggle_fold expands a collapsed deletion fold to show the deleted lines"] = f
 	MiniTest.expect.reference_screenshot(child.get_screenshot())
 end
 
+T["a deletion fold shows a - sign in the gutter"] = function()
+	local O = { "a", "b", "c" }
+	local path = F.tmp_path()
+	child.fn.writefile(O, path)
+	child.cmd("edit " .. path)
+	local hunk = F.delete_hunk("hunk-del", 2, { "b" })
+	F.seed_change(path, O, { hunk })
+
+	local buf = open_review(path)
+	local n = ns()
+	local fold = Q.fold_at(buf, n, 0)
+	MiniTest.expect.equality(fold ~= nil, true, { fail_reason = "fold should be present at row 0" })
+	MiniTest.expect.equality(
+		fold.sign_text ~= nil and fold.sign_text:find("-", 1, true) ~= nil,
+		true,
+		{ fail_reason = "deletion fold should carry a '-' sign_text" }
+	)
+	MiniTest.expect.equality(
+		fold.sign_hl_group == "CodeForgeHunkDeleted",
+		true,
+		{ fail_reason = "deletion fold sign should use CodeForgeHunkDeleted hl" }
+	)
+
+	toggle_fold(path, 0)
+	local expanded = Q.fold_at(buf, n, 0)
+	MiniTest.expect.equality(
+		expanded ~= nil and expanded.sign_text ~= nil and expanded.sign_text:find("-", 1, true) ~= nil,
+		true,
+		{ fail_reason = "expanded fold should still carry the '-' sign" }
+	)
+
+	Q.focus_buf(buf)
+	MiniTest.expect.reference_screenshot(child.get_screenshot())
+end
+
 T["toggle_fold collapses an expanded fold back to the hint (round-trip)"] = function()
 	local O = { "a", "b", "c" }
 	local path = F.tmp_path()

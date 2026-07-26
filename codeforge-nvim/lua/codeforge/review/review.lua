@@ -175,6 +175,8 @@ function Review:render()
 			local expanded = self.expanded[p.hunk_id] == true
 			local id = vim.api.nvim_buf_set_extmark(self.buf, ns, p.fold.anchor_row, 0, {
 				virt_lines = fold_virt_lines(p.fold, expanded),
+				sign_text = "-",
+				sign_hl_group = "CodeForgeHunkDeleted",
 			})
 			self.extmark_ids[#self.extmark_ids + 1] = id
 		end
