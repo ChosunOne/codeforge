@@ -1,14 +1,23 @@
 local M = {}
 
+---Link `name` to `prefer` if that group is defined, else to `fallback`.
+---@param name string the CodeForge group to define
+---@param prefer string the preferred link target
+---@param fallback string the portable fallback
+local function link(name, prefer, fallback)
+	local defined = not vim.tbl_isempty(vim.api.nvim_get_hl(0, { name = prefer, create = false }))
+	vim.api.nvim_set_hl(0, name, { link = defined and prefer or fallback })
+end
+
 function M.setup()
 	vim.api.nvim_set_hl(0, "CodeForgeFile", { link = "Directory" })
-	vim.api.nvim_set_hl(0, "CodeForgeStatusAdded", { link = "GitSignsAdd" })
-	vim.api.nvim_set_hl(0, "CodeForgeStatusModified", { link = "GitSignsChange" })
-	vim.api.nvim_set_hl(0, "CodeForgeStatusDeleted", { link = "GitSignsDelete" })
+	link("CodeForgeStatusAdded", "GitSignsAdd", "DiffAdd")
+	link("CodeForgeStatusModified", "GitSignsChange", "DiffChange")
+	link("CodeForgeStatusDeleted", "GitSignsDelete", "DiffDelete")
 
-	vim.api.nvim_set_hl(0, "CodeForgeHunkAdded", { link = "GitSignsAdd" })
-	vim.api.nvim_set_hl(0, "CodeForgeHunkModified", { link = "GitSignsChange" })
-	vim.api.nvim_set_hl(0, "CodeForgeHunkDeleted", { link = "GitSignsDelete" })
+	link("CodeForgeHunkAdded", "GitSignsAdd", "DiffAdd")
+	link("CodeForgeHunkModified", "GitSignsChange", "DiffChange")
+	link("CodeForgeHunkDeleted", "GitSignsDelete", "DiffDelete")
 end
 
 ---@param status string
