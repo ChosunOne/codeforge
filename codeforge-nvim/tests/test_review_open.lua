@@ -274,6 +274,11 @@ T["open on a newly added file shows the new content in the review buffer"] = fun
 		true,
 		{ fail_reason = "review buffer window not focused" }
 	)
+	MiniTest.expect.equality(
+		child.api.nvim_buf_get_option(buf, "filetype"),
+		"lua",
+		{ fail_reason = "review buffer for a .lua file should have filetype=lua" }
+	)
 end
 
 return T

@@ -118,6 +118,13 @@ function M.open(path)
 		end
 		vim.bo[buf].buftype = ""
 		vim.bo[buf].swapfile = false
+
+		if vim.bo[buf].filetype == "" then
+			local ft = vim.filetype.match({ filename = path })
+			if ft then
+				vim.bo[buf].filetype = ft
+			end
+		end
 	end
 
 	local base = file.base or base_from_status(file, buf)
