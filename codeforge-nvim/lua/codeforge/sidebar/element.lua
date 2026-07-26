@@ -1,6 +1,20 @@
 local Canvas = require("dapui.render.canvas")
 local util = require("dapui.util")
 local config = require("dapui.config")
+local highlight = require("codeforge.highlight")
+
+---Glyph + highlight group for a hunk's review triage status
+---@param status string? "accepted"|"rejected"|"conflicted"|nil
+---@return string glyph
+---@return string hl_group
+local function status_glyph(status)
+	if status == "accepted" or status == "rejected" then
+		return "●", highlight.get_review_status_hl(status)
+	elseif status == "conflicted" then
+		return "◐", highlight.get_review_status_hl(status)
+	end
+	return "○", highlight.get_review_status_hl(nil)
+end
 
 return function(user_config)
 	local element = {
@@ -72,9 +86,12 @@ return function(user_config)
 						current_line = current_line + 1
 
 						if is_expanded and file.hunks and #file.hunks > 0 then
+							local review = state.get_review(file.path)
 							for _, hunk in ipairs(file.hunks) do
 								local hunk_status_upper = hunk.status:upper():sub(1, 1)
 								canvas:write("    ")
+								local glyph, glyph_hl = status_glyph(review and review.hunk_status[hunk.id])
+								canvas:write(glyph .. " ", { group = glyph_hl })
 								canvas:write("L" .. hunk.new_start .. " ")
 								canvas:write(hunk.description .. " ")
 								local status_hl = require("codeforge.highlight").get_status_hl(hunk.status, true)

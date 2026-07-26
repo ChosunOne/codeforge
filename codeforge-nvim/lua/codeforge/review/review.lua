@@ -400,6 +400,7 @@ function Review:reject_hunk(row)
 	local last = adds[#adds] or (p.fold and p.fold.anchor_row)
 	if not first then
 		self.hunk_status[p.hunk_id] = "rejected"
+		state.notify_change()
 		return
 	end
 
@@ -407,6 +408,7 @@ function Review:reject_hunk(row)
 	self:_apply_region(p, first, last, replacement)
 	self.hunk_status[p.hunk_id] = "rejected"
 	self:render()
+	state.notify_change()
 end
 
 function Review:accept_hunk(row)
@@ -419,6 +421,7 @@ function Review:accept_hunk(row)
 	local last = adds[#adds] or (p.fold and p.fold.anchor_row)
 	if not first then
 		self.hunk_status[p.hunk_id] = "accepted"
+		state.notify_change()
 		return
 	end
 
@@ -428,11 +431,13 @@ function Review:accept_hunk(row)
 	local res = merge.merge3(ours, base, cur)
 	if res.conflict then
 		self.hunk_status[p.hunk_id] = "conflicted"
+		state.notify_change()
 		return
 	end
 	self:_apply_region(p, first, last, res.lines)
 	self.hunk_status[p.hunk_id] = "accepted"
 	self:render()
+	state.notify_change()
 end
 
 ---Enter native 3-way diff resolution for the conflicted hunk covering `row`.
@@ -567,6 +572,7 @@ function Review:confirm_resolve()
 		self:_apply_region(p, r.first, r.last, cur)
 		self.hunk_status[r.hunk_id] = "accepted"
 		self:render()
+		state.notify_change()
 	end
 
 	self._resolve = nil

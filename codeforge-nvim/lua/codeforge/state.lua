@@ -74,6 +74,13 @@ function M.set_on_change(callback)
 	M._on_change = callback
 end
 
+---Notify that state changed
+function M.notify_change()
+	if M._on_change then
+		M._on_change()
+	end
+end
+
 -- Get all changes
 function M.get_changes()
 	return M.changes

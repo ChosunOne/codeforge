@@ -18,6 +18,11 @@ function M.setup()
 	link("CodeForgeHunkAdded", "GitSignsAdd", "DiffAdd")
 	link("CodeForgeHunkModified", "GitSignsChange", "DiffChange")
 	link("CodeForgeHunkDeleted", "GitSignsDelete", "DiffDelete")
+
+	link("CodeForgeReviewAccepted", "GitSignsAdd", "DiffAdd")
+	link("CodeForgeReviewRejected", "GitSignsDelete", "DiffDelete")
+	link("CodeForgeReviewConflicted", "GitSignsChange", "DiffChange")
+	vim.api.nvim_set_hl(0, "CodeForgeReviewPending", { link = "Comment" })
 end
 
 ---@param status string
@@ -31,6 +36,20 @@ function M.get_status_hl(status, is_hunk)
 	else
 		return prefix .. "Modified"
 	end
+end
+
+---Highlight group for a hunk's review triage status
+---@param status string? "accepted"|"rejected"|"conflicted"|nil
+---@return string hl_group
+function M.get_review_status_hl(status)
+	if status == "accepted" then
+		return "CodeForgeReviewAccepted"
+	elseif status == "rejected" then
+		return "CodeForgeReviewRejected"
+	elseif status == "conflicted" then
+		return "CodeForgeReviewConflicted"
+	end
+	return "CodeForgeReviewPending"
 end
 
 return M
