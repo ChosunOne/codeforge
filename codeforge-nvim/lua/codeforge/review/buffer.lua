@@ -37,7 +37,7 @@ end
 ---The window showing `buf`, or nil.
 ---@param buf integer
 ---@return integer|nil winid
-function win_for_buf(buf)
+function M.win_for_buf(buf)
 	for _, w in ipairs(vim.api.nvim_list_wins()) do
 		if vim.api.nvim_win_get_buf(w) == buf then
 			return w
@@ -57,7 +57,7 @@ end
 ---window, just focus that. Otherwise replace the contents of a non-sidebar
 ---window with `buf` and focus it.
 local function show_in_main(buf)
-	local w = win_for_buf(buf)
+	local w = M.win_for_buf(buf)
 	if w then
 		vim.api.nvim_set_current_win(w)
 		return
@@ -131,6 +131,21 @@ function M.open(path)
 	local review = Review.new(path, buf, base, file.hunks or {})
 	review:open()
 	show_in_main(buf)
+end
+
+---Show an already-open review for `path` in the main window
+---without re-snapshotting. No-op if no review is in progress.
+---Use this to surface an existing review without the snapshot
+---or build cost of `open`.
+---@param path string
+---@return boolean shown
+function M.show_review(path)
+	local review = state.get_review(path)
+	if not review then
+		return false
+	end
+	show_in_main(review.buf)
+	return true
 end
 
 ---End reviewing `path`: restore the snapshotted buffer content and clear

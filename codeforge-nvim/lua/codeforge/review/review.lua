@@ -22,6 +22,18 @@ local merge = require("codeforge.review.merge")
 local Review = {}
 Review.__index = Review
 
+---The window showing `buf` or nil.
+---@param buf integer
+---@return integer|nil
+local function win_for_buf(buf)
+	for _, w in ipairs(vim.api.nvim_list_wins()) do
+		if vim.api.nvim_win_get_buf(w) == buf then
+			return w
+		end
+	end
+	return nil
+end
+
 ---Build the virt_lines blcok for a `fold` given its expanded state.
 ---Collapsed: the "- N line(s) removed" hint. Expanded: one virt line
 ---per deleted line, each styled with `CodeForgeHunkDeleted`.
@@ -280,6 +292,24 @@ local function hunk_anchor(p)
 	end
 	if p.adds and #p.adds > 0 then
 		return p.adds[1]
+	end
+	return nil
+end
+
+---Return the 1-indexed buffer line of hunk `hunk_id`'s anchor
+---or nil if the hunk isn't placed
+---@param self Review
+---@param hunk_id string
+---@return integer? line 1-indexed
+function Review:hunk_row(hunk_id)
+	for _, p in ipairs(self.placements) do
+		if p.hunk_id == hunk_id then
+			local a = hunk_anchor(p)
+			if a ~= nil then
+				return a + 1
+			end
+			return nil
+		end
 	end
 	return nil
 end

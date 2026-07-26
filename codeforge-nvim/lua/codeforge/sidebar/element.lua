@@ -79,6 +79,31 @@ return function(user_config)
 								canvas:write(hunk.description .. " ")
 								local status_hl = require("codeforge.highlight").get_status_hl(hunk.status, true)
 								canvas:write("[" .. hunk_status_upper .. "]\n", { group = status_hl })
+								local hunk_id = hunk.id
+								canvas:add_mapping("expand", function()
+									local sidebar_win = vim.api.nvim_get_current_win()
+									local buffer = require("codeforge.review.buffer")
+									local review = state.get_review(file.path)
+									if not review then
+										buffer.open(file.path)
+										review = state.get_review(file.path)
+									else
+										buffer.show_review(file.path)
+									end
+									if review then
+										local row = review:hunk_row(hunk_id)
+										if row then
+											local win = buffer.win_for_buf(review.buf)
+											if win then
+												vim.api.nvim_win_set_cursor(win, { row, 0 })
+												vim.api.nvim_win_call(win, function()
+													vim.cmd("normal! zz")
+												end)
+											end
+										end
+									end
+									vim.api.nvim_set_current_win(sidebar_win)
+								end, { line = current_line })
 								current_line = current_line + 1
 							end
 						end
