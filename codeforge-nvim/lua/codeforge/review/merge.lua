@@ -152,11 +152,27 @@ end
 ---@param theirs string[]
 ---@return MergeResult
 function M.merge3(ours, base, theirs)
+	return M.merge3_named(ours, base, theirs, nil, nil)
+end
+
+---3-way merge producing the full file with git conflict markers when there's
+---a conflict. Uses labels for the conflict markers. Returns { ok, conflict, lines }
+---where `lines` is the full file (with conflict markers if conflict).
+---@param ours string[]
+---@param base string[]
+---@param theirs string[]
+---@param ours_label? string marker label for the ours side (default "ours")
+---@param theirs_label? string marker label for the theirs side (default "theirs")
+---@return { ok: boolean, conflict: boolean, lines: string[] }
+function M.merge3_named(ours, base, theirs, ours_label, theirs_label)
+	local ol = ours_label or "ours"
+	local bl = "base"
+	local tl = theirs_label or "theirs"
 	local fa, fb, fc = vim.fn.tempname(), vim.fn.tempname(), vim.fn.tempname()
 	vim.fn.writefile(ours, fa)
 	vim.fn.writefile(base, fb)
 	vim.fn.writefile(theirs, fc)
-	local out = vim.fn.systemlist({ "git", "merge-file", "-p", fa, fb, fc })
+	local out = vim.fn.systemlist({ "git", "merge-file", "-p", "-L", ol, "-L", bl, "-L", tl, fa, fb, fc })
 	local code = vim.v.shell_error
 	vim.fn.delete(fa)
 	vim.fn.delete(fb)

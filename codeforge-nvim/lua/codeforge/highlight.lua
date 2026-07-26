@@ -23,6 +23,11 @@ function M.setup()
 	link("CodeForgeReviewRejected", "GitSignsDelete", "DiffDelete")
 	link("CodeForgeReviewConflicted", "GitSignsChange", "DiffChange")
 	vim.api.nvim_set_hl(0, "CodeForgeReviewPending", { link = "Comment" })
+
+	vim.api.nvim_set_hl(0, "CodeForgeDiffAdd", { bg = "#1e3a2e", default = true })
+	vim.api.nvim_set_hl(0, "CodeForgeDiffDelete", { bg = "#3a1e26", default = true })
+	vim.api.nvim_set_hl(0, "CodeForgeDiffChange", { bg = "#3a3220", default = true })
+	vim.api.nvim_set_hl(0, "CodeForgeDiffText", { bg = "#5c5210", default = true })
 end
 
 ---@param status string

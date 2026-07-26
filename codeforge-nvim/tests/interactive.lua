@@ -2,11 +2,12 @@
 -- Run:  nvim --headless -u tests/init.lua -c "luafile tests/interactive.lua" -c "qa"
 --   or:  open nvim, :luafile tests/interactive.lua, then :CodeForge
 --
--- This seeds a realistic, wide-gamut change set so you can exercise the full
--- review workflow by hand: whole-file additions, whole-file deletions, files
--- with many hunks (insertions, deletions, replaces, multi-line, overlapping
--- regions, line-content-only tweaks). It is the manual sandbox the automated
--- tests can't fully replace.
+-- Seeds a realistic, wide-gamut change set so you can exercise the full review
+-- workflow by hand. Nothing is written to disk: a buffer for the modified file
+-- is created in-memory and pre-loaded with CONFLICTING USER EDITS (U) on two of
+-- the AI's hunks, so accepting those hunks yields a 3-way merge conflict you
+-- can resolve with <C-x>c (then <C-x>o take-ours / <C-x>p take-base / <C-x>f
+-- confirm). The other hunks are clean (U == O in their regions) for contrast.
 
 local codeforge = require("codeforge")
 local state = require("codeforge.state")
@@ -95,7 +96,7 @@ end
 -- File contents (O = base the AI diffed against; for added files, no base)
 ---------------------------------------------------------------------------
 
--- 1. WHOLE-FILE ADDITION: a brand new module.
+-- 1. WHOLE-FILE ADDITION: a brand new module. (No base, no U; clean accept.)
 local new_module = {
 	"local M = {}",
 	"",
@@ -114,7 +115,7 @@ local new_module = {
 }
 
 -- 2. WHOLE-FILE DELETION: an obsolete file removed entirely.
--- (status = "deleted", hunks = {} -- nothing to render.)
+-- (status = "deleted", hunks = {} -- nothing to render; sidebar entry only.)
 
 -- 3. HEAVILY-MODIFIED FILE with many hunks of different shapes.
 local service_base = {
@@ -176,6 +177,20 @@ local service_base = {
 	"return Service",
 }
 
+-- Pre-load an in-memory buffer for the modified file, named with the SAME
+-- relative path the change set uses, and seed it with USER EDITS (U) that
+-- CONFLICT with two of the AI's hunks below. buffer.open() will find this
+-- buffer (via find_loaded_buf) and snapshot it as U; file.base provides O.
+-- Nothing is written to disk.
+local service_buf = vim.api.nvim_create_buf(false, true)
+vim.api.nvim_buf_set_name(service_buf, "src/net/service.lua")
+local service_U = vim.deepcopy(service_base)
+-- line 7: user changed to '0.0.0.0'      -> conflicts with hunk-default-host (AI -> '127.0.0.1')
+-- line 13: user added a timeout option   -> conflicts with hunk-retry-connect (AI -> retry loop)
+service_U[7] = "  self.host = opts.host or '0.0.0.0'"
+service_U[13] = "  self.sock = tcp.dial(self.host, self.port, { timeout = 5 })"
+vim.api.nvim_buf_set_lines(service_buf, 0, -1, false, service_U)
+
 ---------------------------------------------------------------------------
 -- Assemble the change set
 ---------------------------------------------------------------------------
@@ -186,25 +201,27 @@ local test_changes = {
 		timestamp = os.time() - 3600,
 		status = "pending",
 		files = {
-			-- (a) Whole-file addition.
+			-- (a) Whole-file addition. Clean accept (no base, no U).
 			{
 				path = "src/cache/lookup.lua",
 				status = "added",
 				hunks = { add_file_hunks("hunk-add-cache", new_module) },
 			},
-			-- (b) Whole-file deletion.
+			-- (b) Whole-file deletion. Sidebar entry only.
 			{
 				path = "src/legacy/deprecated_api.lua",
 				status = "deleted",
 				hunks = {},
 			},
 			-- (c) Heavily-modified file: many hunks, all shapes.
+			--     Two hunks CONFLICT with the pre-loaded U above; the rest are clean.
 			{
 				path = "src/net/service.lua",
 				status = "modified",
 				base = service_base,
 				hunks = {
-					-- line-content-only tweak (1 line -> 1 line, same length)
+					-- CONFLICT: user changed line 7 to '0.0.0.0', AI changed it to '127.0.0.1'.
+					-- Accept -> conflicted; resolve with <C-x>c -> <C-x>o (ours) / <C-x>p (base) -> <C-x>f.
 					replace_hunk(
 						"hunk-default-host",
 						7,
@@ -212,10 +229,11 @@ local test_changes = {
 						{ "  self.host = opts.host or '127.0.0.1'" }
 					),
 
-					-- pure insertion of a new field (0 removed -> 2 added)
+					-- CLEAN: user didn't touch line 9. Accept applies cleanly.
 					insert_hunk("hunk-add-port-validation", 9, { "  assert(self.port > 0, 'invalid port')", "" }),
 
-					-- multi-line replace: rewrite connect() to add retry
+					-- CONFLICT: user changed the dial line to add a timeout option, AI
+					-- rewrote it into a retry loop. Both edited the same line vs O.
 					replace_hunk("hunk-retry-connect", 13, { "  self.sock = tcp.dial(self.host, self.port)" }, {
 						"  for attempt = 1, 3 do",
 						"    self.sock = tcp.dial(self.host, self.port)",
@@ -224,10 +242,10 @@ local test_changes = {
 						"  end",
 					}),
 
-					-- pure deletion: drop the send() body line (mark for review)
+					-- CLEAN: pure deletion of a line the user didn't touch.
 					delete_hunk("hunk-drop-write", 18, { "  self.sock:write(msg)" }),
 
-					-- overlapping-ish adjacent change: replace close() guard
+					-- CLEAN: replace the close() guard; user didn't touch line 22.
 					replace_hunk(
 						"hunk-close-guard",
 						22,
@@ -235,17 +253,12 @@ local test_changes = {
 						{ "  if self.sock and not self.sock:is_closed() then" }
 					),
 
-					-- multi-line replace that also changes length (3 -> 2)
-					replace_hunk(
-						"hunk-close-teardown",
-						23,
-						{ "    self.sock:close()", "    self.sock = nil" },
-						{
-							"    pcall(self.sock.close, self.sock)",
-							"    self.sock = nil",
-							"    metrics.inc('conn.closed')",
-						}
-					),
+					-- CLEAN: multi-line replace (3 -> 2+) the user didn't touch.
+					replace_hunk("hunk-close-teardown", 23, { "    self.sock:close()", "    self.sock = nil" }, {
+						"    pcall(self.sock.close, self.sock)",
+						"    self.sock = nil",
+						"    metrics.inc('conn.closed')",
+					}),
 				},
 			},
 		},
@@ -260,6 +273,27 @@ state.current_change_id = test_changes[1].id
 state.expanded_files["change-sandbox"] = {
 	["src/net/service.lua"] = true,
 }
+
+-- Build the Review for the modified file DIRECTLY (no buffer.open / show_in_main,
+-- so nothing touches a visible window) and pre-mark the two conflicting hunks
+-- as `conflicted` by hand. The conflicts are genuine by construction (U edits the
+-- same lines the AI changed, so merge3(U[R], O[R], P[R]) conflicts); we just skip
+-- the accept step so you can jump straight to <C-x>c (resolve).
+--
+-- Review:open() snapshots U, builds P into the (unshown) service buffer, and
+-- records placements -- it mutates only service_buf, which is not displayed, so
+-- your current window is untouched. M.open is idempotent (shows an existing
+-- review instead of re-snapshotting), so opening via the sidebar later won't
+-- corrupt the pre-set state.
+do
+	local path = "src/net/service.lua"
+	local file = state.get_current_change().files[3] -- src/net/service.lua
+	local Review = require("codeforge.review.review")
+	local review = Review.new(path, service_buf, file.base, file.hunks)
+	review:open()
+	review.hunk_status["hunk-default-host"] = "conflicted"
+	review.hunk_status["hunk-retry-connect"] = "conflicted"
+end
 
 if state._on_change then
 	state._on_change()

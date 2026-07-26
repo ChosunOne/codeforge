@@ -113,6 +113,18 @@ function M.hl_at(buf, ns, row)
 	return nil
 end
 
+---Extmark details for the sign at `row`, or nil. Matches extmarks
+---carrying `sign_text`/`sign_hl_group`, as opposed to `hl_at`
+---which matches text `hl_group`.
+function M.sign_at(buf, ns, row)
+	for _, m in ipairs(M.extmarks_at(buf, ns, row, 0)) do
+		if m[4] and (m[4].sign_text ~= nil or m[4].sign_hl_group ~= nil) then
+			return m[4]
+		end
+	end
+	return nil
+end
+
 ---@param buf integer
 ---@param ns integer
 ---@param row integer

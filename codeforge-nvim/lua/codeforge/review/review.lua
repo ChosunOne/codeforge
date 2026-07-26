@@ -5,9 +5,10 @@ local merge = require("codeforge.review.merge")
 ---@class ResolveState
 ---@field hunk_id string
 ---@field first integer 0-indexed live buffer region start
----@field last integer 0-indexed live buffer region end (inclusive)
----@field ours_buf integer
----@field base_buf integer
+---@field last integer 0-indexed live buffer end (inclusive)
+---@field resolve_buf integer the editable conflict buffer
+---@field resolve_win integer window showing the resolve_buf
+---@field proposal_R string[] the proposal side P'[R], for <C-x>p take-proposal
 
 ---@class Review
 ---@field path string
@@ -440,10 +441,12 @@ function Review:accept_hunk(row)
 	state.notify_change()
 end
 
----Enter native 3-way diff resolution for the conflicted hunk covering `row`.
----Opens read-only scratch buffers for ours (U[R]) and base (O[R]), diffthis's
----the live buffer + both scratches, and installs resolve keymaps (<C-x>o take
----ours, <C-x>p take theirs, <C-x>f confirm). No-op if the hunk is not conflicted
+---Enter single-buffer conflict resolution for the conflicted hunk covering `row`.
+---Builds one editable buffer holding the full file P with a git merge-conflict
+---block (<<<<<<< ours / ======= / >>>>>>> proposal) around the conflict region R,
+---and install resolve keymaps (<C-x>o take ours, <C-x>p take proposal, <C-x>f
+---confirm). Keymaps are installed before the buffer is shown so prefix-trigger
+---plugins register <C-x> on BufEnter. No-op if the hunk is not conflicted.
 ---@param self Review
 ---@param row integer 0-indexed buffer row
 function Review:resolve_hunk(row)
@@ -463,51 +466,132 @@ function Review:resolve_hunk(row)
 	end
 	self:_close_resolve()
 
-	local ours_lines = self.buf_snapshot
-	local base_lines = self.base_content
+	local ours_R = merge.region_in(self.base_content, self.buf_snapshot, p.region_start, p.region_count)
+	local base_R = merge.region_in(self.base_content, self.base_content, p.region_start, p.region_count)
+	local live_lines = vim.api.nvim_buf_get_lines(self.buf, 0, -1, false) -- full P
+	local live_R = vim.api.nvim_buf_get_lines(self.buf, first, last + 1, false) -- P'[R]
 
-	local function make_scratch(label, lines)
-		local b = vim.api.nvim_create_buf(false, true)
-		vim.api.nvim_buf_set_name(b, "codeforge.resolve." .. label)
-		vim.api.nvim_buf_set_lines(b, 0, -1, false, lines)
-		vim.bo[b].modifiable = false
-		vim.bo[b].bufhidden = "wipe"
-		vim.cmd("vsplit")
-		vim.api.nvim_win_set_buf(0, b)
-		return b
-	end
-
-	local ours_buf = make_scratch("ours", ours_lines)
-	local base_buf = make_scratch("base", base_lines)
-
-	for _, b in ipairs({ ours_buf, base_buf }) do
-		local w = win_for_buf(b)
-		if w then
-			vim.api.nvim_set_current_win(w)
-			vim.cmd("diffthis")
+	local ft = vim.bo[self.buf].filetype
+	if ft == "" then
+		ft = vim.filetype.match({ filename = self.path }) or ""
+		if ft ~= "" then
+			vim.bo[self.buf].filetype = ft
 		end
 	end
 
-	local live_win = win_for_buf(self.buf) or self:_main_win()
-	if live_win then
-		vim.api.nvim_set_current_win(live_win)
+	local res = merge.merge3_named(ours_R, base_R, live_R, "ours", "proposal")
+	local conflict_region = res.lines
+	local conflict_lines = {}
+	for i = 0, first - 1 do
+		conflict_lines[#conflict_lines + 1] = live_lines[i + 1]
 	end
-	vim.cmd("diffthis")
-	if live_win then
-		vim.api.nvim_set_current_win(live_win)
+	for _, l in ipairs(conflict_region) do
+		conflict_lines[#conflict_lines + 1] = l
+	end
+	for i = last + 2, #live_lines do
+		conflict_lines[#conflict_lines + 1] = live_lines[i]
 	end
 
-	self._resolve = { hunk_id = p.hunk_id, first = first, last = last, ours_buf = ours_buf, base_buf = base_buf }
+	local review_win = win_for_buf(self.buf) or self:_main_win()
+	local b = vim.api.nvim_create_buf(false, true)
+	vim.api.nvim_buf_set_name(b, "codeforge.resolve.live")
+	vim.api.nvim_buf_set_lines(b, 0, -1, false, conflict_lines)
+	if ft ~= "" then
+		vim.bo[b].filetype = ft
+	end
+	vim.bo[b].modifiable = true
+	vim.bo[b].bufhidden = "wipe"
+	local resolve_win = review_win or vim.api.nvim_get_current_win()
+	self._resolve = {
+		hunk_id = p.hunk_id,
+		first = first,
+		last = last,
+		resolve_buf = b,
+		resolve_win = resolve_win,
+		review_win = review_win,
+		proposal_R = live_R,
+	}
 	self:_setup_resolve_keymaps()
+	if review_win then
+		vim.api.nvim_win_set_buf(review_win, b)
+	else
+		vim.api.nvim_win_set_buf(0, b)
+	end
+	vim.wo[resolve_win].winbar = "RESOLVE (edit)  <C-x>o take ours  <C-x>p take proposal  <C-x>f confirm"
+	vim.wo[resolve_win].signcolumn = "yes"
+
+	local resolve_ns = vim.api.nvim_create_namespace("codeforge_resolve")
+	local block_start, block_end -- 0-indexed, inclusive
+	for i, l in ipairs(conflict_lines) do
+		if l:sub(1, 7) == "<<<<<<<" then
+			block_start = i - 1
+		elseif l:sub(1, 7) == ">>>>>>>" and block_start then
+			block_end = i - 1
+			break
+		end
+	end
+	if block_start and block_end then
+		for row = block_start, block_end do
+			local line = conflict_lines[row + 1]
+			local is_marker = line:sub(1, 7) == "<<<<<<<" or line:sub(1, 7) == "=======" or line:sub(1, 7) == ">>>>>>>"
+			vim.api.nvim_buf_set_extmark(b, resolve_ns, row, 0, {
+				sign_text = "!",
+				sign_hl_group = "CodeForgeReviewConflicted",
+				hl_group = is_marker and "CodeForgeReviewConflicted" or nil,
+				end_row = row,
+				end_col = is_marker and #line or 0,
+				priority = 200,
+			})
+		end
+	end
+
+	vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
+		buffer = b,
+		callback = function()
+			vim.api.nvim_buf_clear_namespace(b, resolve_ns, 0, -1)
+			local lines = vim.api.nvim_buf_get_lines(b, 0, -1, false)
+			local bs, be
+			for i, l in ipairs(lines) do
+				if l:sub(1, 7) == "<<<<<<<" then
+					bs = i - 1
+				elseif l:sub(1, 7) == ">>>>>>>" and bs then
+					be = i - 1
+					break
+				end
+			end
+			if bs and be then
+				for row = bs, be do
+					local line = lines[row + 1]
+					local is_marker = line:sub(1, 7) == "<<<<<<<"
+						or line:sub(1, 7) == "======="
+						or line:sub(1, 7) == ">>>>>>>"
+					vim.api.nvim_buf_set_extmark(b, resolve_ns, row, 0, {
+						sign_text = "!",
+						sign_hl_group = "CodeForgeReviewConflicted",
+						hl_group = is_marker and "CodeForgeReviewConflicted" or nil,
+						end_row = row,
+						end_col = is_marker and #line or 0,
+						priority = 200,
+					})
+				end
+			end
+		end,
+	})
+
+	for i, l in ipairs(conflict_lines) do
+		if l:sub(1, 7) == "<<<<<<<" then
+			vim.api.nvim_set_current_win(resolve_win)
+			vim.api.nvim_win_set_cursor(resolve_win, { i, 0 })
+			break
+		end
+	end
 end
 
----Take side `which` ("ours" = U, "base" = O) into the live buffer's
----conflicted region, splicing the region directly. The 3-way diffthis
----stays up for visual reference. Updates the stored region end to the
----new length.
+---Take "ours" into the editable conflict buffer: replace the whole merge-conflict block
+---with U[R] (the user's pre-review version of the region), dropping the proposal side and
+---the markers.
 ---@param self Review
----@param which string "ours" or "base"
-function Review:_take_side(which)
+function Review:_take_ours()
 	if not self._resolve then
 		return
 	end
@@ -516,10 +600,49 @@ function Review:_take_side(which)
 	if not p then
 		return
 	end
-	local src = (which == "ours") and self.buf_snapshot or self.base_content
-	local lines = merge.region_in(self.base_content, src, p.region_start, p.region_count)
-	vim.api.nvim_buf_set_lines(self.buf, r.first, r.last + 1, false, lines)
-	r.last = r.first + #lines - 1
+	local ours_R = merge.region_in(self.base_content, self.buf_snapshot, p.region_start, p.region_count)
+	local lines = vim.api.nvim_buf_get_lines(r.resolve_buf, 0, -1, false)
+	local lo, hi -- 0-indexed, hi exclusive
+	for i, l in ipairs(lines) do
+		if l:sub(1, 7) == "<<<<<<<" then
+			lo = i - 1
+		elseif l:sub(1, 7) == ">>>>>>>" and lo then
+			hi = i -- exclusive
+			break
+		end
+	end
+	if lo and hi then
+		vim.api.nvim_buf_set_lines(r.resolve_buf, lo, hi, false, ours_R)
+	end
+end
+
+---Take the proposal into the editable conflict buffer: replace the whole
+---merge-conflict block with the proposal side stored at resolve time,
+---dropping the ours side and the markers. Lets you preview the proposal
+---before committing via <C-x>f (you can still edit after taking, or undo).
+---@param self Review
+function Review:_take_proposal()
+	if not self._resolve then
+		return
+	end
+	local r = self._resolve
+	local proposal_R = r.proposal_R
+	if not proposal_R then
+		return
+	end
+	local lines = vim.api.nvim_buf_get_lines(r.resolve_buf, 0, -1, false)
+	local lo, hi -- 0-indexed, hi exclusive
+	for i, l in ipairs(lines) do
+		if l:sub(1, 7) == "<<<<<<<" then
+			lo = i - 1
+		elseif l:sub(1, 7) == ">>>>>>>" then
+			hi = i -- exclusive
+			break
+		end
+	end
+	if lo and hi then
+		vim.api.nvim_buf_set_lines(r.resolve_buf, lo, hi, false, proposal_R)
+	end
 end
 
 ---Find the placement for `hunk_id`
@@ -544,8 +667,10 @@ function Review:_main_win()
 	end
 end
 
----Confirm the resolution: the live buffer's resolved region becomes final[R],
----mark the hunk 'accepted', diffoff, close scratch buffers, restore keymaps.
+---Confirm the resolution: splice the conflict buffer's contents back into the review
+---buffer verbatim and mark the hunk 'accepted'. The conflict buffer is the full file
+---P with the merge-conflict block around R; whatever the user left there is taken as
+---is.
 ---@param self Review
 function Review:confirm_resolve()
 	if not self._resolve then
@@ -553,55 +678,41 @@ function Review:confirm_resolve()
 	end
 	local r = self._resolve
 	local p = self:_placement_for(r.hunk_id)
-	for _, w in ipairs(vim.api.nvim_list_wins()) do
-		if
-			vim.api.nvim_win_get_buf(w) == self.buf
-			or vim.api.nvim_win_get_buf(w) == r.ours_buf
-			or vim.api.nvim_win_get_buf(w) == r.base_buf
-		then
-			vim.api.nvim_set_current_win(w)
-			vim.cmd("diffoff")
-		end
-	end
-
-	vim.cmd("bdelete " .. r.ours_buf)
-	vim.cmd("bdelete " .. r.base_buf)
+	local lines = vim.api.nvim_buf_get_lines(r.resolve_buf, 0, -1, false)
+	self:_restore_review_window()
 
 	if p then
-		local cur = vim.api.nvim_buf_get_lines(self.buf, r.first, r.last + 1, false)
-		self:_apply_region(p, r.first, r.last, cur)
+		vim.api.nvim_buf_set_lines(self.buf, 0, -1, false, lines)
 		self.hunk_status[r.hunk_id] = "accepted"
+		p.adds = nil
+		p.fold = nil
+		p.kinds = nil
+		self.expanded[r.hunk_id] = nil
 		self:render()
 		state.notify_change()
 	end
 
 	self._resolve = nil
-	self:_teardown_resolve_keymaps()
 end
 
 ---Sets up the resolve keymaps
 ---@param self Review
 function Review:_setup_resolve_keymaps()
+	local r = self._resolve
+	local b = r and r.resolve_buf or self.buf
 	local function map(key, fn, desc)
-		vim.keymap.set("n", key, fn, { buffer = self.buf, silent = true, desc = desc })
+		vim.keymap.set("n", key, fn, { buffer = b, silent = true, desc = desc })
 	end
 
 	map("<C-x>o", function()
-		self:_take_side("ours")
-	end, "CodeForge: take ours (U)")
+		self:_take_ours()
+	end, "CodeForge: take ours")
 	map("<C-x>p", function()
-		self:_take_side("base")
-	end, "CodeForge: take base (O)")
+		self:_take_proposal()
+	end, "CodeForge: take proposal")
 	map("<C-x>f", function()
 		self:confirm_resolve()
 	end, "CodeForge: confirm resolve")
-end
-
----Remove keymaps for conflict resolution
-function Review:_teardown_resolve_keymaps()
-	for _, k in ipairs({ "<C-x>o", "<C-x>p", "<C-x>f" }) do
-		pcall(vim.keymap.del, "n", k, { buffer = self.buf })
-	end
 end
 
 ---Close any open resolve state without confirming
@@ -610,18 +721,23 @@ function Review:_close_resolve()
 	if not self._resolve then
 		return
 	end
-	local r = self._resolve
-	for _, w in ipairs(vim.api.nvim_list_wins()) do
-		local b = vim.api.nvim_win_get_buf(w)
-		if b == self.buf or b == r.ours_buf or b == r.base_buf then
-			vim.api.nvim_set_current_win(w)
-			vim.cmd("diffoff")
-		end
-	end
 
-	pcall(vim.cmd, "bdelete " .. r.ours_buf)
-	pcall(vim.cmd, "bdelete " .. r.base_buf)
+	self:_restore_review_window()
 	self._resolve = nil
+end
+
+---Restore the review buffer to its window, close the ours vsplit window,
+---and wipe the scratch buffers
+function Review:_restore_review_window()
+	local r = self._resolve
+	if not r then
+		return
+	end
+	if r.review_win and vim.api.nvim_win_is_valid(r.review_win) then
+		pcall(vim.api.nvim_win_set_buf, r.review_win, self.buf)
+		vim.wo[r.review_win].winbar = ""
+	end
+	pcall(vim.cmd, "bdelete " .. r.resolve_buf)
 end
 
 ---Replace the live buffer region `[first, last]` (0-indexed, inclusive)
@@ -701,6 +817,12 @@ end
 ---@param self Review
 function Review:open()
 	self.buf_snapshot = vim.api.nvim_buf_get_lines(self.buf, 0, -1, false)
+	if vim.bo[self.buf].filetype == "" then
+		local ft = vim.filetype.match({ filename = self.path })
+		if ft then
+			vim.bo[self.buf].filetype = ft
+		end
+	end
 	self:apply_hunks()
 	self:render()
 	self:setup_keymaps()
