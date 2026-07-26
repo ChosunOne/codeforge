@@ -50,6 +50,13 @@ local function is_added_highlight(details)
 		and details.sign_text == "+ "
 end
 
+local function is_modified_highlight(details)
+	return details ~= nil
+		and details.hl_group == "CodeForgeHunkModified"
+		and details.sign_hl_group == "CodeForgeHunkModified"
+		and details.sign_text == "~ "
+end
+
 local T = MiniTest.new_set({
 	hooks = {
 		pre_case = function()
@@ -91,7 +98,7 @@ T["added lines render with a DiffAdd highlight and a sign"] = function()
 	MiniTest.expect.reference_screenshot(child.get_screenshot())
 end
 
-T["a hunk that adds and deletes renders both a fold and a highlight"] = function()
+T["a modify hunk renders modified and added highlights, no removal fold"] = function()
 	local O = { "a", "b", "c", "d" }
 	local path = F.tmp_path()
 	child.fn.writefile(O, path)
@@ -105,21 +112,20 @@ T["a hunk that adds and deletes renders both a fold and a highlight"] = function
 	local n = ns()
 	Q.expect_lines("P", child.api.nvim_buf_get_lines(buf, 0, -1, false), { "a", "B", "B2", "c", "d" })
 
-	local fold = Q.fold_at(buf, n, 0)
 	MiniTest.expect.equality(
-		fold_says(fold, "1 line removed"),
+		Q.fold_at(buf, n, 0) == nil,
 		true,
-		{ fail_reason = "no valid deletion fold at row 0" }
+		{ fail_reason = "a modify hunk must not render a removal fold" }
 	)
 	MiniTest.expect.equality(
-		is_added_highlight(Q.hl_at(buf, n, 1)),
+		is_modified_highlight(Q.hl_at(buf, n, 1)),
 		true,
-		{ fail_reason = "no valid added-line hightlight at row 1" }
+		{ fail_reason = "row 1 'B' should be a modified highlight" }
 	)
 	MiniTest.expect.equality(
 		is_added_highlight(Q.hl_at(buf, n, 2)),
 		true,
-		{ fail_reason = "no valid added-line hightlight at row 2" }
+		{ fail_reason = "row 2 'B2' should be an added highlight" }
 	)
 
 	MiniTest.expect.equality(#Q.extmarks_at(buf, n, 3, 0), 0, { fail_reason = "context line 3 decorated" })
@@ -217,7 +223,7 @@ T["inserted lines render as added lines with highlight"] = function()
 	MiniTest.expect.reference_screenshot(child.get_screenshot())
 end
 
-T["two separate hunks each render their own artifacts"] = function()
+T["two separate modify hunks each render their own modified highlights"] = function()
 	local O = { "a", "b", "c", "d", "e" }
 	local path = F.tmp_path()
 	child.fn.writefile(O, path)
@@ -233,25 +239,27 @@ T["two separate hunks each render their own artifacts"] = function()
 	Q.expect_lines("P", child.api.nvim_buf_get_lines(buf, 0, -1, false), { "a", "B", "c", "D", "e" })
 
 	MiniTest.expect.equality(
-		fold_says(Q.fold_at(buf, n, 0), "1 line removed"),
+		Q.fold_at(buf, n, 0) == nil,
 		true,
-		{ fail_reason = "no valid deletion fold for hunk-one at row 0" }
+		{ fail_reason = "hunk-one must not render a removal fold" }
 	)
 	MiniTest.expect.equality(
-		is_added_highlight(Q.hl_at(buf, n, 1)),
+		Q.fold_at(buf, n, 2) == nil,
 		true,
-		{ fail_reason = "no valid added-line highlight for hunk-one at row 1" }
+		{ fail_reason = "hunk-two must not render a removal fold" }
 	)
 	MiniTest.expect.equality(
-		fold_says(Q.fold_at(buf, n, 2), "1 line removed"),
+		is_modified_highlight(Q.hl_at(buf, n, 1)),
 		true,
-		{ fail_reason = "no valid deletion fold for hunk-one at row 2" }
+		{ fail_reason = "row 1 'B' should be a modified highlight" }
 	)
 	MiniTest.expect.equality(
-		is_added_highlight(Q.hl_at(buf, n, 3)),
+		is_modified_highlight(Q.hl_at(buf, n, 3)),
 		true,
-		{ fail_reason = "no valid added-line highlight for hunk-one at row 3" }
+		{ fail_reason = "row3 'D' should be a modified highlight" }
 	)
+	MiniTest.expect.equality(#Q.extmarks_at(buf, n, 0, 0), 0, { fail_reason = "context line 0 decorated" })
+	MiniTest.expect.equality(#Q.extmarks_at(buf, n, 2, 0), 0, { fail_reason = "context line 2 decorated" })
 	MiniTest.expect.equality(#Q.extmarks_at(buf, n, 4, 0), 0, { fail_reason = "context line 4 decorated" })
 
 	Q.focus_buf(buf)

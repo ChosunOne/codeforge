@@ -167,4 +167,57 @@ function M.merge3(ours, base, theirs)
 	return { ok = (code == 0), conflict = (code > 0), lines = out }
 end
 
+---Classify each new line of a modify hunk as "context", "modified", or "added"
+---using `git diff --word-diff=plain` between the old block and the new block.
+---@param old_block string[] the hunk's removed lines
+---@param new_block string[] the hunk's added lines
+---@return string[] kinds one per new block line: "context"|"modified"|"added"
+function M.classify_modify(old_block, new_block)
+	if #new_block == 0 then
+		return {}
+	end
+	local fa, fb = vim.fn.tempname(), vim.fn.tempname()
+	vim.fn.writefile(old_block, fa)
+	vim.fn.writefile(new_block, fb)
+	local out = vim.fn.systemlist({
+		"git",
+		"diff",
+		"--no-index",
+		"--no-color",
+		"--word-diff=plain",
+		fa,
+		fb,
+	})
+	vim.fn.delete(fa)
+	vim.fn.delete(fb)
+
+	local kinds = {}
+	local in_hunk = false
+	for _, line in ipairs(out) do
+		if line:sub(1, 2) == "@@" then
+			in_hunk = true
+		elseif in_hunk then
+			local has_rem = line:find("[-", 1, true) ~= nil
+			local has_add = line:find("{+", 1, true) ~= nil
+			if has_rem and not has_add then
+				--skip, no new line
+			elseif has_rem and has_add then
+				kinds[#kinds + 1] = "modified"
+			elseif has_add then
+				kinds[#kinds + 1] = "added"
+			else
+				kinds[#kinds + 1] = "context"
+			end
+		end
+	end
+
+	if #kinds ~= #new_block then
+		local fallback = {}
+		for i = 1, #new_block do
+			fallback[i] = "added"
+		end
+		return fallback
+	end
+	return kinds
+end
 return M

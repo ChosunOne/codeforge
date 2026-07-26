@@ -42,7 +42,8 @@ end
 
 ---@class Placement
 ---@field hunk_id string
----@field adds integer[]?
+---@field adds integer[]? rows of the hunk's new lines (added+modified+context)
+---@field kinds string[]? per adds[i]: "added"|"modified"|"context"
 ---@field fold Fold?
 ---@field region_start integer 1-indexed start of the hunk's region in O
 ---@field region_count integer number of O lines in the hunk's region
@@ -104,8 +105,34 @@ function Review:apply_hunks()
 			end
 		end
 
-		local fold ---@type Fold
-		if removed > 0 then
+		local new_lines = {} ---@type string[]
+		local adds = {} ---@type integer[]
+		for _, line in ipairs(h.lines) do
+			local prefix = line:sub(1, 1)
+			if prefix == "+" or prefix == " " then
+				local content = line:sub(2)
+				out[#out + 1] = content
+				new_lines[#new_lines + 1] = content
+				if prefix == "+" then
+					adds[#adds + 1] = #out - 1
+				end
+			end
+		end
+
+		local kinds ---@type string[]?
+		if #new_lines > 0 then
+			if removed > 0 then
+				kinds = merge.classify_modify(removed_lines, new_lines)
+			else
+				kinds = {}
+				for _ = 1, #new_lines do
+					kinds[#kinds + 1] = "added"
+				end
+			end
+		end
+
+		local fold ---@type Fold?
+		if removed > 0 and #new_lines == 0 then
 			local anchor_row = #out - 1 -- 0-indexed last written proposal line
 			if anchor_row < 0 then
 				anchor_row = 0
@@ -115,20 +142,10 @@ function Review:apply_hunks()
 
 		cursor = cursor + h.old_lines
 
-		local adds = {} ---@type integer[]
-		for _, line in ipairs(h.lines) do
-			local prefix = line:sub(1, 1)
-			if prefix == "+" or prefix == " " then
-				out[#out + 1] = line:sub(2)
-				if prefix == "+" then
-					adds[#adds + 1] = #out - 1 -- 0-indexed proposal row just written
-				end
-			end
-		end
-
 		placements[#placements + 1] = {
 			hunk_id = h.id,
 			adds = adds,
+			kinds = kinds,
 			fold = fold,
 			region_start = h.old_start,
 			region_count = h.old_lines,
@@ -162,14 +179,27 @@ function Review:render()
 			self.extmark_ids[#self.extmark_ids + 1] = id
 		end
 
-		for _, row in ipairs(p.adds or {}) do
-			local id = vim.api.nvim_buf_set_extmark(self.buf, ns, row, 0, {
-				end_row = row,
-				hl_group = "CodeForgeHunkAdded",
-				sign_text = "+",
-				sign_hl_group = "CodeForgeHunkAdded",
-			})
-			self.extmark_ids[#self.extmark_ids + 1] = id
+		for i, row in ipairs(p.adds or {}) do
+			local kind = p.kinds and p.kinds[i] or "added"
+			if kind == "context" then
+				-- no highlight, skip
+			elseif kind == "modified" then
+				local id = vim.api.nvim_buf_set_extmark(self.buf, ns, row, 0, {
+					end_row = row,
+					hl_group = "CodeForgeHunkModified",
+					sign_text = "~",
+					sign_hl_group = "CodeForgeHunkModified",
+				})
+				self.extmark_ids[#self.extmark_ids + 1] = id
+			else
+				local id = vim.api.nvim_buf_set_extmark(self.buf, ns, row, 0, {
+					end_row = row,
+					hl_group = "CodeForgeHunkAdded",
+					sign_text = "+",
+					sign_hl_group = "CodeForgeHunkAdded",
+				})
+				self.extmark_ids[#self.extmark_ids + 1] = id
+			end
 		end
 	end
 end

@@ -100,19 +100,19 @@ T["reject on a replace hunk restores the original line and marks it rejected"] =
 	local n = ns()
 	Q.expect_lines("P", child.api.nvim_buf_get_lines(buf, 0, -1, false), { "a", "B", "c" })
 	MiniTest.expect.equality(
-		Q.fold_at(buf, n, 0) ~= nil,
+		Q.fold_at(buf, n, 0) == nil,
 		true,
-		{ fail_reason = "deletion fold should be on row 0 before reject" }
+		{ fail_reason = "a modify hunk has no removal fold before reject" }
 	)
 	MiniTest.expect.equality(
 		Q.hl_at(buf, n, 1) ~= nil,
 		true,
-		{ fail_reason = "add highlight should be on row 1 before reject" }
+		{ fail_reason = "modified highlight should be on row 1 before reject" }
 	)
 
 	local win = Q.win_for_buf(buf)
 	child.api.nvim_set_current_win(win)
-	child.api.nvim_win_set_cursor(win, { 2, 0 }) -- row 1, the added line "B"
+	child.api.nvim_win_set_cursor(win, { 2, 0 }) -- row 1, the modified line "B"
 	child.type_keys("<C-x>j")
 
 	Q.expect_lines("after reject", child.api.nvim_buf_get_lines(buf, 0, -1, false), { "a", "b", "c" })
@@ -122,14 +122,9 @@ T["reject on a replace hunk restores the original line and marks it rejected"] =
 		{ fail_reason = "hunk should be marked 'rejected'" }
 	)
 	MiniTest.expect.equality(
-		Q.fold_at(buf, n, 0) == nil,
-		true,
-		{ fail_reason = "deletion fold should be removed after reject" }
-	)
-	MiniTest.expect.equality(
 		Q.hl_at(buf, n, 1) == nil,
 		true,
-		{ fail_reason = "add highlight should be removed after reject" }
+		{ fail_reason = "modified highlight should be removed after reject" }
 	)
 
 	Q.focus_buf(buf)
@@ -316,14 +311,14 @@ T["accept on a conflicting region marks it conflicted and leaves the buffer unto
 
 	-- decorations present before accept
 	MiniTest.expect.equality(
-		Q.fold_at(buf, n, 0) ~= nil,
+		Q.fold_at(buf, n, 0) == nil,
 		true,
-		{ fail_reason = "fold should be present before accept" }
+		{ fail_reason = "a modify hunk has no removal fold before accept" }
 	)
 	MiniTest.expect.equality(
 		Q.hl_at(buf, n, 1) ~= nil,
 		true,
-		{ fail_reason = "add highlight should be present before accept" }
+		{ fail_reason = "modified highlight should be present before accept" }
 	)
 
 	child.type_keys("<C-x>a")
@@ -335,14 +330,9 @@ T["accept on a conflicting region marks it conflicted and leaves the buffer unto
 	)
 	Q.expect_lines("buffer unchanged on conflict", child.api.nvim_buf_get_lines(buf, 0, -1, false), { "a", "B", "c" })
 	MiniTest.expect.equality(
-		Q.fold_at(buf, n, 0) ~= nil,
-		true,
-		{ fail_reason = "fold should remain on conflict (unresolved)" }
-	)
-	MiniTest.expect.equality(
 		Q.hl_at(buf, n, 1) ~= nil,
 		true,
-		{ fail_reason = "add highlight should remain on conflict (unresolved)" }
+		{ fail_reason = "modified highlight should remain on conflict (unresolved)" }
 	)
 end
 

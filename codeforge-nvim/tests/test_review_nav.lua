@@ -39,7 +39,7 @@ local function focus_review(buf)
 	return win
 end
 
-T["next_hunk jumps to the next pending hunk and wraps around"] = function()
+local function three_modify_hunks()
 	local O = { "a", "b", "c", "d", "e", "f", "g" }
 	local path = F.tmp_path()
 	child.fn.writefile(O, path)
@@ -48,6 +48,11 @@ T["next_hunk jumps to the next pending hunk and wraps around"] = function()
 	local h2 = F.replace_hunk("h2", 4, "d", "D")
 	local h3 = F.replace_hunk("h3", 6, "f", "F")
 	F.seed_change(path, O, { h1, h2, h3 })
+	return path
+end
+
+T["next_hunk jumps to the next pending hunk and wraps around"] = function()
+	local path = three_modify_hunks()
 
 	local buf = open_review(path)
 	Q.expect_lines("P", child.api.nvim_buf_get_lines(buf, 0, -1, false), { "a", "B", "c", "D", "e", "F", "g" })
@@ -60,69 +65,69 @@ T["next_hunk jumps to the next pending hunk and wraps around"] = function()
 	MiniTest.expect.equality(cursor_row() == 1, true, { fail_reason = "precondition: on h1" })
 
 	child.type_keys("<C-x>n")
-	MiniTest.expect.equality(cursor_row() == 2, true, { fail_reason = "<C-x>n from h1 should land on h2 (row 2)" })
+	MiniTest.expect.equality(cursor_row() == 3, true, { fail_reason = "<C-x>n from h1 should land on h2 (row 3)" })
 
 	child.type_keys("<C-x>n")
-	MiniTest.expect.equality(cursor_row() == 4, true, { fail_reason = "<C-x>n from h2 should land on h3 (row 4)" })
+	MiniTest.expect.equality(cursor_row() == 5, true, { fail_reason = "<C-x>n from h2 should land on h3 (row 5)" })
 
 	child.type_keys("<C-x>n")
-	MiniTest.expect.equality(cursor_row() == 0, true, { fail_reason = "<C-x>n from h3 should wrap to h1 (row 0)" })
+	MiniTest.expect.equality(cursor_row() == 1, true, { fail_reason = "<C-x>n from h3 should wrap to h1 (row 1)" })
 end
 
 T["prev_hunk jumps to the previous pending hunk and wraps around"] = function()
-	local O = { "a", "b", "c", "d", "e", "f", "g" }
-	local path = F.tmp_path()
-	child.fn.writefile(O, path)
-	child.cmd("edit " .. path)
-	local h1 = F.replace_hunk("h1", 2, "b", "B")
-	local h2 = F.replace_hunk("h2", 4, "d", "D")
-	local h3 = F.replace_hunk("h3", 6, "f", "F")
-	F.seed_change(path, O, { h1, h2, h3 })
+	local path = three_modify_hunks()
 
 	local buf = open_review(path)
 	local win = focus_review(buf)
 	child.api.nvim_win_set_cursor(win, { 6, 0 })
 
 	child.type_keys("<C-x>b")
-	MiniTest.expect.equality(cursor_row() == 2, true, { fail_reason = "<C-x>b from h3 should land on h2 (row 2)" })
+	MiniTest.expect.equality(cursor_row() == 3, true, { fail_reason = "<C-x>b from h3 should land on h2 (row 3)" })
 
 	child.type_keys("<C-x>b")
-	MiniTest.expect.equality(cursor_row() == 0, true, { fail_reason = "<C-x>b from h2 should land on h1 (row 0)" })
+	MiniTest.expect.equality(cursor_row() == 1, true, { fail_reason = "<C-x>b from h2 should land on h1 (row 1)" })
 
 	child.type_keys("<C-x>b")
-	MiniTest.expect.equality(cursor_row() == 4, true, { fail_reason = "<C-x>b from h1 should wrap to h3 (row 4)" })
+	MiniTest.expect.equality(cursor_row() == 5, true, { fail_reason = "<C-x>b from h1 should wrap to h3 (row 5)" })
 end
 
 T["hunk navigation skips accepted and rejected hunks"] = function()
-	local O = { "a", "b", "c", "d", "e", "f", "g" }
-	local path = F.tmp_path()
-	child.fn.writefile(O, path)
-	child.cmd("edit " .. path)
-	local h1 = F.replace_hunk("h1", 2, "b", "B")
-	local h2 = F.replace_hunk("h2", 4, "d", "D")
-	local h3 = F.replace_hunk("h3", 6, "f", "F")
-	F.seed_change(path, O, { h1, h2, h3 })
+	local path = three_modify_hunks()
 
 	local buf = open_review(path)
 	local win = focus_review(buf)
 	child.api.nvim_win_set_cursor(win, { 2, 0 })
 	child.type_keys("<C-x>a")
-	child.api.nvim_win_set_cursor(win, { 3, 0 }) -- h2 add moved; land near it
+	MiniTest.expect.equality(
+		child.lua_get(
+			string.format([=[require("codeforge.state").get_review(%s).hunk_status['h1']]=], vim.inspect(path))
+		) == "accepted",
+		true,
+		{ fail_reason = "precondition: h1 accepted" }
+	)
+	child.api.nvim_win_set_cursor(win, { 4, 0 })
 	child.type_keys("<C-x>j")
+	MiniTest.expect.equality(
+		child.lua_get(
+			string.format([=[require("codeforge.state").get_review(%s).hunk_status['h2']]=], vim.inspect(path))
+		) == "rejected",
+		true,
+		{ fail_reason = "precondition: h2 rejected" }
+	)
 
-	child.api.nvim_win_set_cursor(win, { 1, 0 })
+	child.api.nvim_win_set_cursor(win, { 2, 0 })
 	child.type_keys("<C-x>n")
 	MiniTest.expect.equality(
-		cursor_row() == 4,
+		cursor_row() == 5,
 		true,
-		{ fail_reason = "<C-x>n should skip accepted h1 & rejected h2, landing on h3 (row 4)" }
+		{ fail_reason = "<C-x>n should skip accepted h1 & rejected h2, landing on h3 (row 5)" }
 	)
 
 	child.type_keys("<C-x>n")
 	MiniTest.expect.equality(
-		cursor_row() == 4,
+		cursor_row() == 5,
 		true,
-		{ fail_reason = "with only h3 pending, <C-x>n should stay/wrap to h3 (row 4)" }
+		{ fail_reason = "with only h3 pending, <C-x>n should stay/wrap to h3 (row 5)" }
 	)
 end
 
