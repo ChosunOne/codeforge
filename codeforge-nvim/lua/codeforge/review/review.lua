@@ -682,12 +682,15 @@ function Review:confirm_resolve()
 	self:_restore_review_window()
 
 	if p then
-		vim.api.nvim_buf_set_lines(self.buf, 0, -1, false, lines)
+		local n = vim.api.nvim_buf_line_count(self.buf)
+		local tail = n - (r.last + 1)
+		local m = #lines
+		local region = {}
+		for i = r.first + 1, m - tail do
+			region[#region + 1] = lines[i]
+		end
+		self:_apply_region(p, r.first, r.last, region)
 		self.hunk_status[r.hunk_id] = "accepted"
-		p.adds = nil
-		p.fold = nil
-		p.kinds = nil
-		self.expanded[r.hunk_id] = nil
 		self:render()
 		state.notify_change()
 	end

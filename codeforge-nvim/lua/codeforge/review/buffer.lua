@@ -100,12 +100,6 @@ function M.open(path)
 		return
 	end
 
-	local existing = state.get_review(path)
-	if existing then
-		show_in_main(existing.buf)
-		return
-	end
-
 	local buf = find_loaded_buf(path)
 	if not buf then
 		buf = vim.api.nvim_create_buf(false, true)

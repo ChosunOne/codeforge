@@ -435,6 +435,95 @@ T["<C-x>c resolve flow: take ours then confirm yields U[R] and clears the confli
 	)
 end
 
+T["resolve shifts later hunks' signs by the line-count delta (no stale signs)"] = function()
+	local O = { "a", "b", "c", "d", "e" }
+	local U = { "a", "b-user", "c", "d", "e" }
+	local path = F.tmp_path()
+	child.fn.writefile(O, path)
+	child.cmd("edit " .. path)
+	local pre_buf = Q.find_buf(path)
+	child.api.nvim_buf_set_lines(pre_buf, 0, -1, false, U)
+	local hunk_conf = F.replace_hunk("hunk-conf", 2, "b", "B1", "B2") -- 1 removed, 2 added
+	local hunk_add = F.insert_hunk("hunk-add", 5, { "Z" }) -- pure add before "e"
+	F.seed_change(path, O, { hunk_conf, hunk_add })
+
+	local buf = open_review(path)
+	local n = ns()
+	Q.expect_lines("P", child.api.nvim_buf_get_lines(buf, 0, -1, false), { "a", "B1", "B2", "c", "d", "Z", "e" })
+
+	local pre = Q.sign_at(buf, n, 5)
+	MiniTest.expect.equality(pre ~= nil, true, { fail_reason = "hunk-add should have a sign at row 5 before resolve" })
+	MiniTest.expect.equality(
+		pre and pre.sign_hl_group,
+		"CodeForgeHunkAdded",
+		{ fail_reason = "hunk-add sign should be CodeForgeHunkAdded before resolve" }
+	)
+
+	local win = Q.win_for_buf(buf)
+	child.api.nvim_set_current_win(win)
+	child.api.nvim_win_set_cursor(win, { 2, 0 })
+	child.type_keys("<C-x>a")
+	MiniTest.expect.equality(
+		hunk_status(path, "hunk-conf") == "conflicted",
+		true,
+		{ fail_reason = "precondition: hunk-conf should be conflicted" }
+	)
+	child.type_keys("<C-x>c")
+
+	local resolve_buf
+	for _, b in ipairs(child.api.nvim_list_bufs()) do
+		if child.api.nvim_buf_get_name(b):match("codeforge%.resolve") then
+			resolve_buf = b
+		end
+	end
+	MiniTest.expect.equality(resolve_buf ~= nil, true, { fail_reason = "resolve scratch not found" })
+	child.type_keys("<C-x>o")
+	child.type_keys("<C-x>f")
+
+	Q.expect_lines(
+		"after resolve",
+		child.api.nvim_buf_get_lines(buf, 0, -1, false),
+		{ "a", "b-user", "c", "d", "Z", "e" }
+	)
+	MiniTest.expect.equality(
+		hunk_status(path, "hunk-conf") == "accepted",
+		true,
+		{ fail_reason = "hunk-conf should be 'accepted' after confirm" }
+	)
+	local st_add = hunk_status(path, "hunk-add")
+	MiniTest.expect.equality(
+		st_add ~= "accepted" and st_add ~= "rejected",
+		true,
+		{ fail_reason = "hunk-add should remain untouched (not accepted/rejected)" }
+	)
+	local moved = Q.sign_at(buf, n, 4)
+	MiniTest.expect.equality(
+		moved ~= nil,
+		true,
+		{ fail_reason = "hunk-add sign should move to row 4 (on 'Z') after resolve" }
+	)
+	MiniTest.expect.equality(
+		moved and moved.sign_hl_group,
+		"CodeForgeHunkAdded",
+		{ fail_reason = "shifted sign should still be CodeForgeHunkAdded" }
+	)
+	MiniTest.expect.equality(
+		Q.sign_at(buf, n, 5),
+		nil,
+		{ fail_reason = "no sign should remain on row 5 ('e') after resolve" }
+	)
+	MiniTest.expect.equality(
+		Q.sign_at(buf, n, 1),
+		nil,
+		{ fail_reason = "resolved hunk-conf should leave no sign on row 1" }
+	)
+	MiniTest.expect.equality(
+		Q.sign_at(buf, n, 2),
+		nil,
+		{ fail_reason = "resolved hunk-conf should leave no sign on row 2" }
+	)
+end
+
 T["resolve view: single editable conflict buffer with git merge markers + syntax + winbar"] = function()
 	local O = { "local M = {}", "function M.f()", "  return 'b'", "end", "return M" }
 	local U = { "local M = {}", "function M.f()", "  return 'b-user'", "end", "return M" }
@@ -547,27 +636,17 @@ T["resolve: the conflict block is marked with a gutter sign (not a full-line hig
 		return d and (d.sign_hl_group or d.sign_text) or nil
 	end
 	for _, row in ipairs({ 2, 3, 4, 5, 6 }) do -- 0-indexed conflict block rows
-		MiniTest.expect.equality(
-			sign_row(row) == "CodeForgeReviewConflicted",
-			true,
-			{
-				fail_reason = "conflict block row "
-					.. row
-					.. " should have a CodeForgeReviewConflicted gutter sign, got "
-					.. tostring(sign_row(row)),
-			}
-		)
+		MiniTest.expect.equality(sign_row(row) == "CodeForgeReviewConflicted", true, {
+			fail_reason = "conflict block row "
+				.. row
+				.. " should have a CodeForgeReviewConflicted gutter sign, got "
+				.. tostring(sign_row(row)),
+		})
 	end
 	for _, row in ipairs({ 0, 1, 7, 8 }) do -- outside the block
-		MiniTest.expect.equality(
-			sign_row(row) == nil,
-			true,
-			{
-				fail_reason = "non-conflict row " .. row .. " should have no gutter sign, got " .. tostring(
-					sign_row(row)
-				),
-			}
-		)
+		MiniTest.expect.equality(sign_row(row) == nil, true, {
+			fail_reason = "non-conflict row " .. row .. " should have no gutter sign, got " .. tostring(sign_row(row)),
+		})
 	end
 	-- marker lines (<<<<<<< at row 2, ======= at row 4, >>>>>>> at row 6) ALSO
 	-- carry a full-line text highlight so they stand out; the content lines
@@ -577,28 +656,20 @@ T["resolve: the conflict block is marked with a gutter sign (not a full-line hig
 		return d and d.hl_group or nil
 	end
 	for _, row in ipairs({ 2, 4, 6 }) do -- marker lines
-		MiniTest.expect.equality(
-			hl_row(row) == "CodeForgeReviewConflicted",
-			true,
-			{
-				fail_reason = "marker row "
-					.. row
-					.. " should have a full-line CodeForgeReviewConflicted text highlight, got "
-					.. tostring(hl_row(row)),
-			}
-		)
+		MiniTest.expect.equality(hl_row(row) == "CodeForgeReviewConflicted", true, {
+			fail_reason = "marker row "
+				.. row
+				.. " should have a full-line CodeForgeReviewConflicted text highlight, got "
+				.. tostring(hl_row(row)),
+		})
 	end
 	for _, row in ipairs({ 3, 5 }) do -- content lines between markers
-		MiniTest.expect.equality(
-			hl_row(row) == nil,
-			true,
-			{
-				fail_reason = "content row "
-					.. row
-					.. " should have NO text highlight (gutter sign only), got "
-					.. tostring(hl_row(row)),
-			}
-		)
+		MiniTest.expect.equality(hl_row(row) == nil, true, {
+			fail_reason = "content row "
+				.. row
+				.. " should have NO text highlight (gutter sign only), got "
+				.. tostring(hl_row(row)),
+		})
 	end
 end
 
