@@ -103,7 +103,7 @@ T["accepting a hunk shows a green full circle in the sidebar; pending stays empt
 	local _, win = open_review(path)
 	child.api.nvim_set_current_win(win)
 	child.api.nvim_win_set_cursor(win, { 2, 0 })
-	child.type_keys("<C-x>a") -- accept hunk-2
+	child.type_keys("<C-x>a")
 
 	local sb = sidebar_buf()
 	MiniTest.expect.equality(sb ~= nil, true, { fail_reason = "sidebar buffer not found" })
@@ -147,9 +147,9 @@ T["rejecting a hunk shows a red full circle, distinct from accepted green"] = fu
 	local _, win = open_review(path)
 	child.api.nvim_set_current_win(win)
 	child.api.nvim_win_set_cursor(win, { 2, 0 })
-	child.type_keys("<C-x>a") -- accept hunk-2
+	child.type_keys("<C-x>a")
 	child.api.nvim_win_set_cursor(win, { 4, 0 })
-	child.type_keys("<C-x>j") -- reject hunk-4
+	child.type_keys("<C-x>j")
 
 	local sb = sidebar_buf()
 	MiniTest.expect.equality(sb ~= nil, true, { fail_reason = "sidebar buffer not found" })
@@ -171,6 +171,60 @@ T["rejecting a hunk shows a red full circle, distinct from accepted green"] = fu
 		hl_at(sb, 5, col5) == "CodeForgeReviewRejected",
 		true,
 		{ fail_reason = "hunk-4 ● should be red (rejected), got " .. tostring(hl_at(sb, 5, col5)) }
+	)
+end
+
+T["sidebar L-label tracks the hunk's live position after a free-form edit above it"] = function()
+	local O = { "a", "b", "c", "d", "e" }
+	local path = F.tmp_path()
+	child.fn.writefile(O, path)
+	child.cmd("edit " .. path)
+	local hunk = {
+		id = "hunk-5",
+		description = "hunk-5",
+		status = "modified",
+		old_start = 5,
+		old_lines = 0,
+		new_start = 5,
+		new_lines = 1,
+		lines = { "+Z" },
+	}
+	F.seed_change(path, O, { hunk })
+
+	child.cmd("CodeForge")
+	child.type_keys("3gg")
+	child.type_keys("o")
+
+	local sb = sidebar_buf()
+	MiniTest.expect.equality(sb ~= nil, true, { fail_reason = "sidebar buffer not found" })
+	local ok0 = wait_for(function()
+		local lines = child.api.nvim_buf_get_lines(sb, 0, -1, false)
+		return lines[4] and lines[4]:find("L5", 1, true) ~= nil
+	end)
+	MiniTest.expect.equality(ok0, true, {
+		fail_reason = "hunk row should show L5 before review, got: "
+			.. vim.inspect(child.api.nvim_buf_get_lines(sb, 0, -1, false)),
+	})
+
+	local buf, win = open_review(path)
+	child.api.nvim_set_current_win(win)
+	child.api.nvim_buf_set_lines(buf, 0, 0, false, { "x1", "x2" })
+	child.api.nvim_exec_autocmds("TextChanged", { buffer = buf })
+	child.lua([[vim.wait(300)]])
+
+	local ok = wait_for(function()
+		local lines = child.api.nvim_buf_get_lines(sb, 0, -1, false)
+		return lines[4] and lines[4]:find("L7", 1, true) ~= nil
+	end)
+	MiniTest.expect.equality(ok, true, {
+		fail_reason = "hunk label should track the edit to L7, got: "
+			.. vim.inspect(child.api.nvim_buf_get_lines(sb, 0, -1, false)),
+	})
+	local lines = child.api.nvim_buf_get_lines(sb, 0, -1, false)
+	MiniTest.expect.equality(
+		lines[4]:find("L5", 1, true) == nil,
+		true,
+		{ fail_reason = "stale L5 label should be gone, got: " .. lines[4] }
 	)
 end
 
