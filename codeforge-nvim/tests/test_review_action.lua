@@ -309,7 +309,6 @@ T["accept on a conflicting region marks it conflicted and leaves the buffer unto
 	child.api.nvim_set_current_win(win)
 	child.api.nvim_win_set_cursor(win, { 2, 0 })
 
-	-- decorations present before accept
 	MiniTest.expect.equality(
 		Q.fold_at(buf, n, 0) == nil,
 		true,
@@ -690,8 +689,8 @@ T["resolve: the conflict block is marked with a gutter sign (not a full-line hig
 	local win = Q.win_for_buf(buf)
 	child.api.nvim_set_current_win(win)
 	child.api.nvim_win_set_cursor(win, { 3, 0 })
-	child.type_keys("<C-x>a") -- conflict
-	child.type_keys("<C-x>c") -- enter resolve
+	child.type_keys("<C-x>a")
+	child.type_keys("<C-x>c")
 
 	local resolve_buf
 	for _, b in ipairs(child.api.nvim_list_bufs()) do
@@ -960,7 +959,7 @@ T["a resolved hunk stays reachable: it can be re-resolved or rejected after conf
 
 	child.api.nvim_set_current_win(win)
 	child.api.nvim_win_set_cursor(win, { 2, 0 })
-	child.type_keys("<C-x>j") -- reject
+	child.type_keys("<C-x>j")
 	MiniTest.expect.equality(
 		hunk_status(path, "hunk-conf"),
 		"rejected",
@@ -1003,6 +1002,73 @@ T["resolve: confirm with markers still present keeps them verbatim (no stripping
 		true,
 		{ fail_reason = "hunk should be 'accepted' after confirm even with markers present" }
 	)
+end
+
+T["resolve: take ours/proposal only affect the CURRENT conflict, never a leftover marker block"] = function()
+	local O = { "a", "b", "c", "d", "e" }
+	local U = { "a", "b-user", "c", "d", "e-user" } -- user edits BOTH conflicting regions
+	local path = F.tmp_path()
+	child.fn.writefile(O, path)
+	child.cmd("edit " .. path)
+	local pre_buf = Q.find_buf(path)
+	child.api.nvim_buf_set_lines(pre_buf, 0, -1, false, U)
+	local h1 = F.replace_hunk("hunk-b", 2, "b", "B")
+	local h2 = F.replace_hunk("hunk-e", 5, "e", "E")
+	F.seed_change(path, O, { h1, h2 })
+
+	local buf = open_review(path)
+	local win = Q.win_for_buf(buf)
+	child.api.nvim_set_current_win(win)
+
+	child.api.nvim_win_set_cursor(win, { 2, 0 })
+	child.type_keys("<C-x>a")
+	child.type_keys("<C-x>c")
+	child.type_keys("<C-x>f")
+	Q.expect_lines("resolve1 markers kept", child.api.nvim_buf_get_lines(buf, 0, -1, false), {
+		"a",
+		"<<<<<<< ours",
+		"b-user",
+		"=======",
+		"B",
+		">>>>>>> proposal",
+		"c",
+		"d",
+		"E",
+	})
+
+	child.api.nvim_set_current_win(win)
+	child.api.nvim_win_set_cursor(win, { 9, 0 })
+	child.type_keys("<C-x>a")
+	child.type_keys("<C-x>c")
+	local resolve_buf
+	for _, b in ipairs(child.api.nvim_list_bufs()) do
+		if child.api.nvim_buf_get_name(b):match("codeforge%.resolve") then
+			resolve_buf = b
+		end
+	end
+	local rw = Q.win_for_buf(resolve_buf)
+	child.api.nvim_set_current_win(rw)
+	child.api.nvim_win_set_cursor(rw, { 3, 0 })
+
+	child.type_keys("<C-x>o")
+	Q.expect_lines("after <C-x>o near the old site", child.api.nvim_buf_get_lines(resolve_buf, 0, -1, false), {
+		"a",
+		"<<<<<<< ours",
+		"b-user",
+		"=======",
+		"B",
+		">>>>>>> proposal",
+		"c",
+		"d",
+		"e-user",
+	})
+
+	local resolve_ns = child.lua_get([[vim.api.nvim_create_namespace("codeforge_resolve")]])
+	for row = 1, 5 do -- the stale block rows
+		MiniTest.expect.equality(Q.sign_at(resolve_buf, resolve_ns, row) == nil, true, {
+			fail_reason = "stale conflict row " .. row .. " must NOT carry a resolve gutter sign after take-ours",
+		})
+	end
 end
 
 T["resolve: <C-x>p take-proposal replaces the conflict block with the proposal side"] = function()

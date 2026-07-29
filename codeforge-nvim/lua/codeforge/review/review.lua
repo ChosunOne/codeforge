@@ -6,9 +6,11 @@ local merge = require("codeforge.review.merge")
 ---@field hunk_id string
 ---@field first integer 0-indexed live buffer region start
 ---@field last integer 0-indexed live buffer end (inclusive)
+---@field region_len_integer integer number of buffer lines the conflict region occupies
 ---@field resolve_buf integer the editable conflict buffer
 ---@field resolve_win integer window showing the resolve_buf
 ---@field proposal_R string[] the proposal side P'[R], for <C-x>p take-proposal
+---@field block_mark integer extmark id tracking the current conflict block's start row in resolve_buf
 
 ---@class Review
 ---@field path string
@@ -52,6 +54,51 @@ local function fold_virt_lines(fold, expanded)
 	end
 	local text = string.format("- %d %s removed", fold.count, fold.count == 1 and "line" or "lines")
 	return { { { text, "CodeForgeHunkDeleted" } } }
+end
+
+---Scan [lo, hi] (0-indexed, inclusive) for the first complete merge-conflict
+---block. Returns 0-indexed inclusive start/end, or nil.
+---@param lines string[]
+---@param lo integer 0-indexed start (inclusive)
+---@param hi integer 0-indexed end (inclusive)
+---@return integer? block_start 0-indexed inclusive
+---@return integer? block_end 0-indexed inclusive
+local function scan_block(lines, lo, hi)
+	local s, e
+	for i = lo + 1, hi + 1 do
+		local l = lines[i]
+		if not l then
+			break
+		end
+		if l:sub(1, 7) == "<<<<<<<" then
+			s = i - 1
+		elseif l:sub(1, 7) == ">>>>>>>" and s then
+			e = i - 1
+			break
+		end
+	end
+	return s, e
+end
+
+---Find the merge-conflict block belonging to the hunk under resolve,
+---scoped to that hunk's region [scope_lo, scope_hi] (0-indexed, inclusive).
+---Falls back to a whole-buffer scan only when no complete block exists in
+---the window. Returns 0-indexed inclusive start/end, or nil.
+---@param lines string[]
+---@param scope_lo integer 0-indexed region start (inclusive)
+---@param scope_hi integer 0-indexed region end (inclusive)
+---@param track_row integer 0-indexed last known position of the block's start
+---@return integer? block_start 0-indexed inclusive
+---@return integer? block_end 0-indexed inclusive
+local function find_conflict_block(lines, scope_lo, scope_hi, track_row)
+	local opener = lines[track_row + 1]
+	if opener and opener:sub(1, 7) == "<<<<<<<" then
+		local _, e = scan_block(lines, track_row, #lines - 1)
+		if e then
+			return track_row, e
+		end
+	end
+	return scan_block(lines, scope_lo, scope_hi)
 end
 
 ---Placement rows are represented by extmark ids. Use `_row_of` to
@@ -605,6 +652,7 @@ function Review:resolve_hunk(row)
 		hunk_id = p.hunk_id,
 		first = first,
 		last = last,
+		region_len = #conflict_region,
 		resolve_buf = b,
 		resolve_win = resolve_win,
 		review_win = review_win,
@@ -620,42 +668,14 @@ function Review:resolve_hunk(row)
 	vim.wo[resolve_win].signcolumn = "yes"
 
 	local resolve_ns = vim.api.nvim_create_namespace("codeforge_resolve")
-
-	---Find this hunk's merge-conflicted block, scoped to its region so markers a
-	---previous conflict left elsewhere in the file are not mistaken for the current one.
-	---@param lines string[]
-	---@return integer? block_start 0-indexed inclusive
-	---@return integer? block_end 0-indexed inclusive
-	local function find_conflict_block(lines)
-		local scan_lo = first
-		local scan_hi = first + #conflict_region - 1
-		local function scan(lo, hi)
-			local s, e
-			for i = lo + 1, hi + 1 do
-				local l = lines[i]
-				if not l then
-					break
-				end
-				if l:sub(1, 7) == "<<<<<<<" then
-					s = i - 1
-				elseif l:sub(1, 7) == ">>>>>>>" and s then
-					e = i - 1
-					break
-				end
-			end
-			return s, e
-		end
-		local s, e = scan(scan_lo, scan_hi)
-		if not (s and e) then
-			s, e = scan(0, #lines - 1)
-		end
-		return s, e
+	local track_ns = vim.api.nvim_create_namespace("codeforge_resolve_track")
+	local function locate(lines)
+		return find_conflict_block(lines, first, first + #conflict_region - 1, self:_resolve_track_row())
 	end
 
-	local block_start, block_end = find_conflict_block(conflict_lines)
-	if block_start and block_end then
-		for row = block_start, block_end do
-			local line = conflict_lines[row + 1]
+	local function paint(lines, bs, be)
+		for row = bs, be do
+			local line = lines[row + 1]
 			local is_marker = line:sub(1, 7) == "<<<<<<<" or line:sub(1, 7) == "=======" or line:sub(1, 7) == ">>>>>>>"
 			vim.api.nvim_buf_set_extmark(b, resolve_ns, row, 0, {
 				sign_text = "!",
@@ -668,27 +688,22 @@ function Review:resolve_hunk(row)
 		end
 	end
 
+	local block_start, block_end = locate(conflict_lines)
+	if block_start then
+		self._resolve.block_mark = vim.api.nvim_buf_set_extmark(b, track_ns, block_start, 0, { right_gravity = false })
+	end
+	if block_start and block_end then
+		paint(conflict_lines, block_start, block_end)
+	end
+
 	vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
 		buffer = b,
 		callback = function()
 			vim.api.nvim_buf_clear_namespace(b, resolve_ns, 0, -1)
 			local lines = vim.api.nvim_buf_get_lines(b, 0, -1, false)
-			local bs, be = find_conflict_block(lines)
+			local bs, be = locate(lines)
 			if bs and be then
-				for row = bs, be do
-					local line = lines[row + 1]
-					local is_marker = line:sub(1, 7) == "<<<<<<<"
-						or line:sub(1, 7) == "======="
-						or line:sub(1, 7) == ">>>>>>>"
-					vim.api.nvim_buf_set_extmark(b, resolve_ns, row, 0, {
-						sign_text = "!",
-						sign_hl_group = "CodeForgeReviewConflicted",
-						hl_group = is_marker and "CodeForgeReviewConflicted" or nil,
-						end_row = row,
-						end_col = is_marker and #line or 0,
-						priority = 200,
-					})
-				end
+				paint(lines, bs, be)
 			end
 		end,
 	})
@@ -697,6 +712,22 @@ function Review:resolve_hunk(row)
 		vim.api.nvim_set_current_win(resolve_win)
 		vim.api.nvim_win_set_cursor(resolve_win, { block_start + 1, 0 })
 	end
+end
+
+---The live 0-indexed start row of the current conflict block in the resolve
+---buffer, from the tracking extmark.
+---@param self Review
+---@return integer
+function Review:_resolve_track_row()
+	local r = self._resolve
+	if r and r.block_mark and vim.api.nvim_buf_is_valid(r.resolve_buf) then
+		local track_ns = vim.api.nvim_create_namespace("codeforge_resolve_track")
+		local pos = vim.api.nvim_buf_get_extmark_by_id(r.resolve_buf, track_ns, r.block_mark, {})
+		if pos and pos[1] then
+			return pos[1]
+		end
+	end
+	return r and r.first or 0
 end
 
 ---Take "ours" into the editable conflict buffer: replace the whole merge-conflict block
@@ -714,17 +745,9 @@ function Review:_take_ours()
 	end
 	local ours_R = merge.region_in(self.base_content, self.buf_snapshot, p.region_start, p.region_count)
 	local lines = vim.api.nvim_buf_get_lines(r.resolve_buf, 0, -1, false)
-	local lo, hi -- 0-indexed, hi exclusive
-	for i, l in ipairs(lines) do
-		if l:sub(1, 7) == "<<<<<<<" then
-			lo = i - 1
-		elseif l:sub(1, 7) == ">>>>>>>" and lo then
-			hi = i -- exclusive
-			break
-		end
-	end
+	local lo, hi = find_conflict_block(lines, r.first, r.first + (r.region_len or 1) - 1, self:_resolve_track_row())
 	if lo and hi then
-		vim.api.nvim_buf_set_lines(r.resolve_buf, lo, hi, false, ours_R)
+		vim.api.nvim_buf_set_lines(r.resolve_buf, lo, hi + 1, false, ours_R)
 	end
 end
 
@@ -743,17 +766,9 @@ function Review:_take_proposal()
 		return
 	end
 	local lines = vim.api.nvim_buf_get_lines(r.resolve_buf, 0, -1, false)
-	local lo, hi -- 0-indexed, hi exclusive
-	for i, l in ipairs(lines) do
-		if l:sub(1, 7) == "<<<<<<<" then
-			lo = i - 1
-		elseif l:sub(1, 7) == ">>>>>>>" then
-			hi = i -- exclusive
-			break
-		end
-	end
+	local lo, hi = find_conflict_block(lines, r.first, r.first + (r.region_len or 1) - 1, self:_resolve_track_row())
 	if lo and hi then
-		vim.api.nvim_buf_set_lines(r.resolve_buf, lo, hi, false, proposal_R)
+		vim.api.nvim_buf_set_lines(r.resolve_buf, lo, hi + 1, false, proposal_R)
 	end
 end
 
