@@ -22,6 +22,7 @@ function M.setup()
 	link("CodeForgeReviewAccepted", "GitSignsAdd", "DiffAdd")
 	link("CodeForgeReviewRejected", "GitSignsDelete", "DiffDelete")
 	link("CodeForgeReviewConflicted", "GitSignsChange", "DiffChange")
+	link("CodeForgeReviewModified", "GitSignsChange", "DiffChange")
 	vim.api.nvim_set_hl(0, "CodeForgeReviewPending", { link = "Comment" })
 end
 
@@ -48,6 +49,8 @@ function M.get_review_status_hl(status)
 		return "CodeForgeReviewRejected"
 	elseif status == "conflicted" then
 		return "CodeForgeReviewConflicted"
+	elseif status == "modified" then
+		return "CodeForgeReviewModified"
 	end
 	return "CodeForgeReviewPending"
 end

@@ -16,6 +16,19 @@ local function status_glyph(status)
 	return "○", highlight.get_review_status_hl(nil)
 end
 
+---Glyph + highlight group for a change's derived review status
+---@param status string "pending"|"accepted"|"rejected"|"modified"
+---@return string glyph
+---@return string hl_group
+local function change_status_glyph(status)
+	if status == "accepted" or status == "rejected" then
+		return "●", highlight.get_review_status_hl(status)
+	elseif status == "modified" then
+		return "◐", highlight.get_review_status_hl(status)
+	end
+	return "○", highlight.get_review_status_hl(nil)
+end
+
 return function(user_config)
 	local element = {
 		allow_without_session = true,
@@ -60,7 +73,11 @@ return function(user_config)
 		if change then
 			local index = state.get_change_index()
 			local total = #state.get_changes()
-			canvas:write(string.format("[%d/%d] %s\n\n", index, total, change.title))
+			canvas:write(string.format("[%d/%d] %s\n", index, total, change.title))
+			local change_status = state.derive_status(change)
+			local glyph, glyph_hl = change_status_glyph(change_status)
+			canvas:write(glyph .. " ", { group = glyph_hl })
+			canvas:write(change_status .. "\n", { group = glyph_hl })
 			local current_line = 3
 
 			if change.files and #change.files > 0 then

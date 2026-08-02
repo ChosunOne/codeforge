@@ -22,6 +22,8 @@ local merge = require("codeforge.review.merge")
 ---@field extmark_ids integer[] extmark ids created by the render
 ---@field expanded table<string, boolean> hunk_id -> expanded
 ---@field hunk_status table<string, string> hunk_id -> 'pending|'rejected'|'accepted'
+---@field proposal string[]? unmodified proposal P
+---@field user_modified boolean true when the live buffer differs from P
 ---@field _reconcile_timer any? debounce timer for the edit reconciler
 local Review = {}
 Review.__index = Review
@@ -139,6 +141,7 @@ function Review.new(path, buf, base, hunks)
 		extmark_ids = {},
 		expanded = {},
 		hunk_status = {},
+		user_modified = false,
 	}, Review)
 end
 
@@ -228,6 +231,7 @@ function Review:apply_hunks()
 	end
 
 	self.placements = placements
+	self.proposal = out
 	vim.api.nvim_buf_set_lines(self.buf, 0, -1, false, out)
 end
 
@@ -1025,6 +1029,7 @@ function Review:_reconcile()
 	if changed then
 		self:render()
 	end
+	self.user_modified = not vim.deep_equal(buf_lines, self.proposal)
 	state.notify_change()
 end
 

@@ -14,33 +14,52 @@ local T = MiniTest.new_set({
 
 T["sidebar displays files in change"] = function()
 	child.lua([[
-		local state = require("codeforge.state")
-		state.changes = {
-			{
-				id = "change-001",
-				title = "Add authentication system",
-				files = {
-					{ path = "src/auth.lua", status = "modified", hunks = {} },
-					{ path = "src/middleware.lua", status = "added", hunks = {} },
-					{ path = "tests/auth_test.lua", status = "added", hunks = {} },
-					{ path = "src/old_auth.lua", status = "deleted", hunks = {} }
-				}
-			}
-		}
+                local state = require("codeforge.state")
+                state.changes = {
+                        {
+                                id = "change-001",
+                                title = "Add authentication system",
+                                files = {
+                                        { path = "src/auth.lua", status = "modified", hunks = {
+                                                { id = "h1", description = "h1", status = "modified", new_start = 1 },
+                                        } },
+                                        { path = "src/middleware.lua", status = "added", hunks = {} },
+                                        { path = "tests/auth_test.lua", status = "added", hunks = {} },
+                                        { path = "src/old_auth.lua", status = "deleted", hunks = {} }
+                                }
+                        }
+                }
 
-		state.current_change_index = 1
-		state.current_change_id = "change-001"
-	]])
+                state.current_change_index = 1
+                state.current_change_id = "change-001"
+        ]])
 
 	child.cmd("CodeForge")
 
-	local wins = child.api.nvim_list_wins()
-	local sidebar_win = wins[#wins]
-	local buf = child.api.nvim_win_get_buf(sidebar_win)
-	local lines = child.api.nvim_buf_get_lines(buf, 0, -1, false)
+	local buf
+	for _, w in ipairs(child.api.nvim_list_wins()) do
+		local b = child.api.nvim_win_get_buf(w)
+		if child.api.nvim_buf_get_option(b, "filetype") == "codeforge" then
+			buf = b
+			break
+		end
+	end
+	MiniTest.expect.equality(buf ~= nil, true, { fail_reason = "sidebar buffer not found" })
+	local lines = {}
+	for _ = 1, 60 do
+		lines = child.api.nvim_buf_get_lines(buf, 0, -1, false)
+		if #lines >= 7 and lines[1] and lines[1]:find("%[1/1%]") then
+			break
+		end
+		child.lua([[vim.wait(25)]])
+	end
 
 	MiniTest.expect.equality(string.find(lines[1], "%[1/1%] Add authentication system") ~= nil, true, {
 		fail_reason = "Got " .. lines[1],
+	})
+
+	MiniTest.expect.equality(string.find(lines[2], "^○ pending$") ~= nil, true, {
+		fail_reason = "status line should be the icon + word, got " .. lines[2],
 	})
 
 	MiniTest.expect.equality(string.find(lines[3], "▸ src/auth.lua %[M%]") ~= nil, true, {
@@ -74,30 +93,30 @@ end
 
 T["expanding a modified file should display hunks"] = function()
 	child.lua([[
-		local state = require("codeforge.state")
-		state.changes = {
-			{
-				id = "change-001",
-				title = "Test",
-				files = {
-					{
-						path = "src/file.lua",
-						status = "modified",
-						hunks = {
-							{ 
-								id = "hunk-001", 
-								description = "Add login function",
-								new_start = 0,
-								status = "modified"
-							}
-						}
-					}
-				}
-			}
-		}
-		state.current_change_index = 1
-		state.current_change_id = "change-001"
-	]])
+                local state = require("codeforge.state")
+                state.changes = {
+                        {
+                                id = "change-001",
+                                title = "Test",
+                                files = {
+                                        {
+                                                path = "src/file.lua",
+                                                status = "modified",
+                                                hunks = {
+                                                        {
+                                                                id = "hunk-001",
+                                                                description = "Add login function",
+                                                                new_start = 0,
+                                                                status = "modified"
+                                                        }
+                                                }
+                                        }
+                                }
+                        }
+                }
+                state.current_change_index = 1
+                state.current_change_id = "change-001"
+        ]])
 
 	child.cmd("CodeForge")
 

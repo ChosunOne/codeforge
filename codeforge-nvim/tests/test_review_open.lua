@@ -144,6 +144,57 @@ T["open does not write to disk"] = function()
 	)
 end
 
+T["reopening an in-progress review preserves hunk status and U"] = function()
+	local O = { "a", "b", "c" }
+	local path = F.tmp_path()
+	child.fn.writefile(O, path)
+	child.cmd("edit " .. path)
+
+	child.api.nvim_buf_set_lines(0, 0, -1, false, { "a", "X", "c" })
+	local hunk = F.replace_hunk("hunk-001", 2, "b", "b", "B")
+	F.seed_change(path, O, { hunk })
+
+	local function open()
+		child.lua(string.format([[require("codeforge.review.buffer").open(%s)]], vim.inspect(path)))
+	end
+
+	open()
+	child.lua(string.format(
+		[[
+                    local r = require("codeforge.state").get_review(%s)
+                    _G.__first_review = r
+                    r.hunk_status["hunk-001"] = "conflicted"
+            ]],
+		vim.inspect(path)
+	))
+
+	open()
+
+	MiniTest.expect.equality(
+		child.lua_get(
+			string.format([[require("codeforge.state").get_review(%s) == _G.__first_review]], vim.inspect(path))
+		),
+		true,
+		{ fail_reason = "reopening created a new Review, discarding triage state" }
+	)
+	MiniTest.expect.equality(
+		child.lua_get(
+			string.format(
+				[=[(require("codeforge.state").get_review(%s).hunk_status or {})["hunk-001"]]=],
+				vim.inspect(path)
+			)
+		),
+		"conflicted",
+		{ fail_reason = "hunk status was reset on reopen" }
+	)
+	Q.expect_lines(
+		"U preserved",
+		child.lua_get(string.format([[require("codeforge.state").get_review(%s).buf_snapshot]], vim.inspect(path))),
+		{ "a", "X", "c" }
+	)
+	child.lua([[_G.__first_review = nil]])
+end
+
 T["dismiss restores the original U into the buffer"] = function()
 	local O = { "a", "b", "c" }
 	local U = { "a", "X", "c" }

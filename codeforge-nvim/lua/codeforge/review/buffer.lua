@@ -94,6 +94,13 @@ end
 ---Begin reviewing `path`: snapshot, build, load into the real buffer.
 ---@param path string
 function M.open(path)
+	local existing = state.get_review(path)
+
+	if existing then
+		show_in_main(existing.buf)
+		return
+	end
+
 	local file = find_file(path)
 	if not file then
 		vim.notify("CodeForge: no change for " .. path, vim.log.levels.WARN)

@@ -189,4 +189,46 @@ end
 ---@param status string
 function M.set_hunk_status(hunk_id, status) end
 
+---Derive a change's aggregate review status from its child hunks.
+---  pending	-> any hunk still pending
+---  accepted	-> all hunks accepted
+---  rejected	-> all hunks rejected
+---  modified	-> mixed accept/reject, or edited
+---@param change Change
+---@return "pending"|"accepted"|"rejected"|"modified"
+function M.derive_status(change)
+	local any_pending = false
+	local any_accepted = false
+	local any_rejected = false
+	local user_modified = false
+
+	for _, file in ipairs(change.files or {}) do
+		local review = M.reviews[file.path]
+		if review and review.user_modified then
+			user_modified = true
+		end
+		for _, hunk in ipairs(file.hunks or {}) do
+			local st = review and review.hunk_status[hunk.id] or nil
+			if st == "accepted" then
+				any_accepted = true
+			elseif st == "rejected" then
+				any_rejected = true
+			else
+				any_pending = true
+			end
+		end
+	end
+
+	if any_pending then
+		return "pending"
+	end
+	if user_modified or (any_accepted and any_rejected) then
+		return "modified"
+	end
+	if any_rejected then
+		return "rejected"
+	end
+	return "accepted"
+end
+
 return M
