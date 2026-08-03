@@ -201,17 +201,16 @@ local test_changes = {
 		timestamp = os.time() - 3600,
 		status = "pending",
 		files = {
-			-- (a) Whole-file addition. Clean accept (no base, no U).
 			{
 				path = "src/cache/lookup.lua",
 				status = "added",
 				hunks = { add_file_hunks("hunk-add-cache", new_module) },
 			},
-			-- (b) Whole-file deletion. Sidebar entry only.
 			{
 				path = "src/legacy/deprecated_api.lua",
 				status = "deleted",
 				hunks = {},
+				decision = "accepted",
 			},
 			-- (c) Heavily-modified file: many hunks, all shapes.
 			--     Two hunks CONFLICT with the pre-loaded U above; the rest are clean.

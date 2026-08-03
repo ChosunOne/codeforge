@@ -82,11 +82,14 @@ return function(user_config)
 
 			if change.files and #change.files > 0 then
 				for _, file in ipairs(change.files) do
-					local is_modified = file.status == "modified"
+					local expandable = file.status ~= "deleted"
 					local is_expanded = state.is_expanded(file.path)
 					local status_upper = file.status:upper():sub(1, 1)
 
-					if is_modified then
+					local fglyph, fglyph_hl = state.file_status_glyph(file)
+					canvas:write(fglyph .. " ", { group = fglyph_hl })
+
+					if file.status == "modified" then
 						local indicator = is_expanded and "▾" or "▸"
 						canvas:write(indicator .. " ")
 						canvas:write(file.path .. " ", { group = "CodeForgeFile" })
@@ -106,7 +109,7 @@ return function(user_config)
 							local review = state.get_review(file.path)
 							for _, hunk in ipairs(file.hunks) do
 								local hunk_status_upper = hunk.status:upper():sub(1, 1)
-								canvas:write("    ")
+								canvas:write("      ")
 								local glyph, glyph_hl = status_glyph(review and review.hunk_status[hunk.id])
 								canvas:write(glyph .. " ", { group = glyph_hl })
 								local live_row = review and review:hunk_row(hunk.id) or nil
@@ -148,9 +151,15 @@ return function(user_config)
 						local status_hl = require("codeforge.highlight").get_status_hl(file.status, false)
 						canvas:write(" ")
 						canvas:write("[" .. status_upper .. "]\n", { group = status_hl })
-						canvas:add_mapping("expand", function()
-							require("codeforge.review.buffer").open(file.path)
+						canvas:add_mapping("open", function()
+							file.decision = file.decision == "accepted" and "rejected" or "accepted"
+							state.notify_change()
 						end, { line = current_line })
+						if expandable then
+							canvas:add_mapping("expand", function()
+								require("codeforge.review.buffer").open(file.path)
+							end, { line = current_line })
+						end
 						current_line = current_line + 1
 					end
 				end

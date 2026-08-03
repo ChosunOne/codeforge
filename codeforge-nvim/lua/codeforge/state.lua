@@ -36,6 +36,7 @@ end
 ---@field status Status
 ---@field hunks Hunk[]
 ---@field base string[]?
+---@field decision string? "accepted"|"rejected"
 
 ---@class Hunk
 ---@field id string
@@ -189,6 +190,57 @@ end
 ---@param status string
 function M.set_hunk_status(hunk_id, status) end
 
+---True when `file` needs no hunk-level review: a whole-file addition
+---or a whole-file deletion.
+---@param file File
+---@return boolean
+local function is_atomic(file)
+	return file.status == "added" or file.status == "deleted"
+end
+
+---True when every part of `file` has been triaged.
+---@param file File
+---@return boolean
+function M.file_completed(file)
+	if is_atomic(file) then
+		return file.decision ~= nil
+	end
+
+	local review = M.reviews[file.path]
+	for _, hunk in ipairs(file.hunks or {}) do
+		local st = review and review.hunk_status[hunk.id] or nil
+		if st ~= "accepted" and st ~= "rejected" then
+			return false
+		end
+	end
+	return true
+end
+
+---Completion indicator for a sidebar file row: the hunk-review
+---glyph for modified files, the file-level decision for added/
+---deleted files.
+---@param file File
+---@return string glyph "●" completed | "○" pending
+---@return string hl_group
+function M.file_status_glyph(file)
+	local hl = require("codeforge.highlight")
+	if not M.file_completed(file) then
+		return "○", hl.get_review_status_hl(nil)
+	end
+	if is_atomic(file) then
+		return "●", hl.get_review_status_hl(file.decision)
+	end
+	local review = M.reviews[file.path]
+	local all_accepted = true
+	for _, hunk in ipairs(file.hunks or {}) do
+		if not (review and review.hunk_status[hunk.id] == "accepted") then
+			all_accepted = false
+			break
+		end
+	end
+	return "●", hl.get_review_status_hl(all_accepted and "accepted" or "modified")
+end
+
 ---Derive a change's aggregate review status from its child hunks.
 ---  pending	-> any hunk still pending
 ---  accepted	-> all hunks accepted
@@ -207,14 +259,24 @@ function M.derive_status(change)
 		if review and review.user_modified then
 			user_modified = true
 		end
-		for _, hunk in ipairs(file.hunks or {}) do
-			local st = review and review.hunk_status[hunk.id] or nil
-			if st == "accepted" then
+		if is_atomic(file) then
+			if file.decision == "accepted" then
 				any_accepted = true
-			elseif st == "rejected" then
+			elseif file.decision == "rejected" then
 				any_rejected = true
 			else
 				any_pending = true
+			end
+		else
+			for _, hunk in ipairs(file.hunks or {}) do
+				local st = review and review.hunk_status[hunk.id] or nil
+				if st == "accepted" then
+					any_accepted = true
+				elseif st == "rejected" then
+					any_rejected = true
+				else
+					any_pending = true
+				end
 			end
 		end
 	end

@@ -98,6 +98,51 @@ T["derive_status: all accepted but user hand-edited proposal -> modified"] = fun
 	MiniTest.expect.equality(derive(), "modified")
 end
 
+---Seed a change with one added and one deleted file (both atomic).
+local function seed_atomic()
+	child.lua([[
+                    local state = require("codeforge.state")
+                    state.reset()
+                    state.changes = {
+                            {
+                                    id = "change-001",
+                                    title = "Atomic",
+                                    files = {
+                                            { path = "src/new.lua", status = "added", hunks = {} },
+                                            { path = "src/old.lua", status = "deleted", hunks = {} },
+                                    }
+                            }
+                    }
+                    state.current_change_index = 1
+                    state.current_change_id = "change-001"
+            ]])
+end
+
+T["derive_status: undecided atomic files gate the change at pending"] = function()
+	seed_atomic()
+	MiniTest.expect.equality(derive(), "pending")
+end
+
+T["derive_status: decided added + undecided deleted -> pending"] = function()
+	seed_atomic()
+	child.lua([[require("codeforge.state").changes[1].files[1].decision = "accepted"]])
+	MiniTest.expect.equality(derive(), "pending")
+end
+
+T["derive_status: both atomic files accepted -> accepted"] = function()
+	seed_atomic()
+	child.lua([[require("codeforge.state").changes[1].files[1].decision =  "accepted"]])
+	child.lua([[require("codeforge.state").changes[1].files[2].decision = "accepted"]])
+	MiniTest.expect.equality(derive(), "accepted")
+end
+
+T["derive_status: added accepted + deleted rejected -> modified"] = function()
+	seed_atomic()
+	child.lua([[require("codeforge.state").changes[1].files[1].decision = "accepted"]])
+	child.lua([[require("codeforge.state").changes[1].files[2].decision = "rejected"]])
+	MiniTest.expect.equality(derive(), "modified")
+end
+
 local function open_review(path)
 	child.lua(string.format([[require("codeforge.review.buffer").open(%s)]], vim.inspect(path)))
 	return Q.find_buf(path)
