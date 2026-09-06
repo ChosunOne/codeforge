@@ -263,17 +263,70 @@ function M.persist_log(entry)
 	end
 end
 
+---Find the tracked change containing `path`, or nil.
+---@param path string
+---@return Change|nil
+function M.change_for_path(path)
+	for _, change in ipairs(M.changes) do
+		for _, file in ipairs(change.files or {}) do
+			if file.path == path then
+				return change
+			end
+		end
+	end
+	return nil
+end
+
+---Complete a fully-triaged change.
+---@param change Change
+function M.complete_change(change)
+	if not change then
+		return
+	end
+
+	local entry = M.build_log_entry(change)
+	for _, file in ipairs(change.files or {}) do
+		local review = M.reviews[file.path]
+		if review then
+			review:dismiss()
+		end
+	end
+	M.remove_change(change.id, entry)
+end
+
+---Watch for completion: when `change`'s derived status has left `pending`,
+---complete it.
+---@param change Change
+---@return boolean completed
+function M.maybe_complete(change)
+	if not change or not change.id then
+		return false
+	end
+
+	for _, c in ipairs(M.changes) do
+		if c == change then
+			if M.derive_status(change) == "pending" then
+				return false
+			end
+			M.complete_change(change)
+			return true
+		end
+	end
+	return false
+end
+
 ---Remove the change with `id` from the change list.
 ---@param id string
+---@param entry table?
 ---@return boolean removed true when a change with `id` existed
-function M.remove_change(id)
+function M.remove_change(id, entry)
 	local idx = change_index(id)
 	if not idx then
 		return false
 	end
 
 	local change = M.changes[idx]
-	M.append_log(M.build_log_entry(change))
+	M.append_log(entry or M.build_log_entry(change))
 	table.remove(M.changes, idx)
 	M.expanded_files[id] = nil
 

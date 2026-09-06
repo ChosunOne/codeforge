@@ -15,13 +15,7 @@ local function ns()
 end
 
 local function hunk_status(path, hunk_id)
-	return child.lua_get(
-		string.format(
-			[=[((require("codeforge.state").get_review(%s) or {}).hunk_status or {})[%s]]=],
-			vim.inspect(path),
-			vim.inspect(hunk_id)
-		)
-	)
+	return F.hunk_outcome(path, hunk_id)
 end
 
 local function open_review(path)
@@ -927,15 +921,18 @@ T["resolve: edit the conflict buffer by hand then confirm keeps the edit"] = fun
 end
 
 T["a resolved hunk stays reachable: it can be re-resolved or rejected after confirm"] = function()
-	local O = { "a", "b", "c" }
-	local U = { "a", "b-user", "c" }
+	local O = { "a", "b", "c", "d" }
+	local U = { "a", "b-user", "c", "d" }
 	local path = F.tmp_path()
 	child.fn.writefile(O, path)
 	child.cmd("edit " .. path)
 	local pre_buf = Q.find_buf(path)
 	child.api.nvim_buf_set_lines(pre_buf, 0, -1, false, U)
+	-- two hunks: resolving the first must NOT auto-complete the change,
+	-- so the resolved hunk stays reachable for re-triage
 	local hunk = F.replace_hunk("hunk-conf", 2, "b", "B")
-	F.seed_change(path, O, { hunk })
+	local hunk2 = F.replace_hunk("hunk-later", 4, "d", "D")
+	F.seed_change(path, O, { hunk, hunk2 })
 
 	local buf = open_review(path)
 	local win = Q.win_for_buf(buf)
@@ -945,7 +942,7 @@ T["a resolved hunk stays reachable: it can be re-resolved or rejected after conf
 	child.type_keys("<C-x>c")
 	child.type_keys("<C-x>o")
 	child.type_keys("<C-x>f")
-	Q.expect_lines("after resolve", child.api.nvim_buf_get_lines(buf, 0, -1, false), { "a", "b-user", "c" })
+	Q.expect_lines("after resolve", child.api.nvim_buf_get_lines(buf, 0, -1, false), { "a", "b-user", "c", "D" })
 	MiniTest.expect.equality(hunk_status(path, "hunk-conf"), "accepted")
 
 	local found = child.lua_get(

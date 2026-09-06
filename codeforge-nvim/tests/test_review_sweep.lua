@@ -11,13 +11,7 @@ F.set_child(child)
 Q.set_child(child)
 
 local function hunk_status(path, hunk_id)
-	return child.lua_get(
-		string.format(
-			[=[((require("codeforge.state").get_review(%s) or {}).hunk_status or {})[%s]]=],
-			vim.inspect(path),
-			vim.inspect(hunk_id)
-		)
-	)
+	return F.hunk_outcome(path, hunk_id)
 end
 
 local function open_review(path)
@@ -59,6 +53,17 @@ local function seed_multi(files, sel)
         ]],
 		table.concat(chunks, ", ")
 	))
+end
+
+---Capture vim.notify calls in the child for assertion.
+local function capture_notify()
+	child.lua(
+		[[CODEFORGE_NOTES = {}; vim.notify = function(msg, level) table.insert(CODEFORGE_NOTES, { msg = msg, level = level }) end]]
+	)
+end
+
+local function notify_msgs()
+	return child.lua_get([[CODEFORGE_NOTES or {}]])
 end
 
 local T = MiniTest.new_set({
@@ -255,39 +260,51 @@ T["sweep decides undecided atomic files; decided ones stay put"] = function()
 
 	MiniTest.expect.equality(hunk_status(pa, "a-h1"), "accepted", { fail_reason = "modified file swept" })
 	MiniTest.expect.equality(
-		child.lua_get(string.format([[require("codeforge.state").changes[1].files[2].decision]], vim.inspect(added))),
-		"accepted",
-		{ fail_reason = "undecided added file should be accepted by the sweep" }
-	)
-	MiniTest.expect.equality(
-		child.lua_get(string.format([[require("codeforge.state").changes[1].files[3].decision]])),
-		"accepted",
-		{ fail_reason = "undecided deleted file should be accepted by the sweep" }
-	)
-	MiniTest.expect.equality(
-		child.lua_get(string.format([[require("codeforge.state").changes[1].files[4].decision]])),
-		"rejected",
-		{ fail_reason = "already-decided atomic file must keep its decision" }
-	)
-	MiniTest.expect.equality(
 		child.lua_get(string.format([[require("codeforge.state").get_review(%s) == nil]], vim.inspect(added))),
 		true,
 		{ fail_reason = "no review should be created for the added file" }
 	)
+	-- the sweep triaged everything -> the change auto-completed; the decision
+	-- outcomes live in the newest decision-log entry now
+	local entry = child.lua_get([=[require("codeforge.state").log[#require("codeforge.state").log]]=])
+	MiniTest.expect.equality(entry.files[2].decision, "accepted", {
+		fail_reason = "undecided added file should be accepted by the sweep, got " .. vim.inspect(entry.files[2]),
+	})
+	MiniTest.expect.equality(entry.files[3].decision, "accepted", {
+		fail_reason = "undecided deleted file should be accepted by the sweep",
+	})
+	MiniTest.expect.equality(entry.files[4].decision, "rejected", {
+		fail_reason = "already-decided atomic file must keep its decision",
+	})
 
-	-- reject sweep: undecided atomics flip to rejected, decided ones untouched
-	child.lua([[require("codeforge.state").changes[1].files[2].decision = nil]])
+	-- reject phase: a fresh change with an undecided atomic flips to rejected
+	local pb = F.tmp_path()
+	local added2 = F.tmp_path()
+	child.fn.writefile({ "b1", "b2" }, pb)
+	child.lua(string.format(
+		[[
+                local state = require("codeforge.state")
+                state.reset()
+                state.changes = { {
+                        id = "change-002",
+                        title = "Atomic2",
+                        files = {
+                                { path = %s, status = "modified", base = { "b1", "b2" }, hunks = { %s } },
+                                { path = %s, status = "added", hunks = {} },
+                        },
+                } }
+                state.current_change_index = 1
+                state.current_change_id = "change-002"
+        ]],
+		vim.inspect(pb),
+		vim.inspect(F.replace_hunk("b-h1", 1, "b1", "B1")),
+		vim.inspect(added2)
+	))
 	child.lua_get([[require("codeforge.sidebar.actions").reject_pending()]])
-	MiniTest.expect.equality(
-		child.lua_get(string.format([[require("codeforge.state").changes[1].files[2].decision]])),
-		"rejected",
-		{ fail_reason = "reject sweep should decide the added file as rejected" }
-	)
-	MiniTest.expect.equality(
-		child.lua_get(string.format([[require("codeforge.state").changes[1].files[4].decision]])),
-		"rejected",
-		{ fail_reason = "already-rejected deleted file must keep its decision" }
-	)
+	entry = child.lua_get([=[require("codeforge.state").log[#require("codeforge.state").log]]=])
+	MiniTest.expect.equality(entry.files[2].decision, "rejected", {
+		fail_reason = "reject sweep should decide the added file as rejected",
+	})
 end
 
 T["sweep on a fully triaged change is a no-op returning zero"] = function()
@@ -302,6 +319,95 @@ T["sweep on a fully triaged change is a no-op returning zero"] = function()
 	local again = child.lua_get([[require("codeforge.sidebar.actions").accept_pending()]])
 
 	MiniTest.expect.equality(again, 0, { fail_reason = "nothing pending, nothing swept" })
+end
+
+T["sweep notifies when conflicted hunks remain after sweeping"] = function()
+	local O = { "a", "b", "c", "d" }
+	local path = F.tmp_path()
+	child.fn.writefile(O, path)
+	child.cmd("edit " .. path)
+	-- pre-edit U region of h1 (conflict source, same recipe as the sandbox)
+	child.api.nvim_buf_set_lines(Q.find_buf(path), 0, -1, false, { "a", "b-user", "c", "d" })
+	local h1 = F.replace_hunk("h1", 2, "b", "B")
+	local h2 = F.replace_hunk("h2", 4, "d", "D")
+	F.seed_change(path, O, { h1, h2 })
+
+	open_review(path)
+	-- mark h1 conflicted (as the resolve flow would have left it)
+	child.lua(
+		string.format([[require("codeforge.state").get_review(%s).hunk_status.h1 = "conflicted"]], vim.inspect(path))
+	)
+	capture_notify()
+
+	local swept = child.lua_get([[require("codeforge.sidebar.actions").accept_pending()]])
+
+	MiniTest.expect.equality(swept, 1, { fail_reason = "only h2 (pending) should be swept" })
+	local msgs = notify_msgs()
+	local conflict_msg
+	for _, m in ipairs(msgs) do
+		if tostring(m.msg):find("conflict") then
+			conflict_msg = m.msg
+		end
+	end
+	MiniTest.expect.equality(conflict_msg ~= nil, true, {
+		fail_reason = "a conflict summary should be notified, got " .. vim.inspect(msgs),
+	})
+	MiniTest.expect.equality(
+		tostring(conflict_msg):find("1 hunk") ~= nil,
+		true,
+		{ fail_reason = "message should count the conflicted hunk, got: " .. tostring(conflict_msg) }
+	)
+	MiniTest.expect.equality(
+		tostring(conflict_msg):find("resolve") ~= nil,
+		true,
+		{ fail_reason = "message should suggest resolving, got: " .. tostring(conflict_msg) }
+	)
+end
+
+T["clean sweep does not notify"] = function()
+	local O = { "a", "b" }
+	local path = F.tmp_path()
+	child.fn.writefile(O, path)
+	F.seed_change(path, O, { F.replace_hunk("h1", 1, "a", "A") })
+	open_review(path)
+	capture_notify()
+
+	child.lua_get([[require("codeforge.sidebar.actions").accept_pending()]])
+
+	MiniTest.expect.equality(#notify_msgs(), 0, {
+		fail_reason = "a fully-clean sweep should stay silent, got " .. vim.inspect(notify_msgs()),
+	})
+end
+
+T["reject_pending sweeps conflicted hunks back to the user's version (U)"] = function()
+	local O = { "a", "b", "c", "d" }
+	local path = F.tmp_path()
+	child.fn.writefile(O, path)
+	child.cmd("edit " .. path)
+	-- user edited the region h1 touches BEFORE review (U != O)
+	child.api.nvim_buf_set_lines(Q.find_buf(path), 0, -1, false, { "a", "b-user", "c", "d" })
+	local h1 = F.replace_hunk("h1", 2, "b", "B")
+	local h2 = F.replace_hunk("h2", 4, "d", "D")
+	F.seed_change(path, O, { h1, h2 })
+
+	open_review(path)
+	-- h1 went conflicted (as an earlier accept attempt would leave it)
+	child.lua(
+		string.format([[require("codeforge.state").get_review(%s).hunk_status.h1 = "conflicted"]], vim.inspect(path))
+	)
+
+	child.lua(string.format([[require("codeforge.state").get_review(%s):reject_pending()]], vim.inspect(path)))
+
+	MiniTest.expect.equality(hunk_status(path, "h1"), "rejected", {
+		fail_reason = "a conflicted hunk must be sweepable by reject (take ours)",
+	})
+	MiniTest.expect.equality(hunk_status(path, "h2"), "rejected", { fail_reason = "pending h2 should be swept too" })
+	Q.expect_lines(
+		"buffer after reject sweep of conflict",
+		buf_lines(path),
+		{ "a", "b-user", "c", "d" },
+		"user's U content must be restored, not O"
+	)
 end
 
 return T

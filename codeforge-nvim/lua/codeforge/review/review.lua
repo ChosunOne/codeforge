@@ -23,7 +23,7 @@ local merge = require("codeforge.review.merge")
 ---@field expanded table<string, boolean> hunk_id -> expanded
 ---@field hunk_status table<string, string> hunk_id -> 'pending|'rejected'|'accepted'
 ---@field proposal string[]? unmodified proposal P
----@field user_modified boolean true when the live buffer differs from P
+---@field user_modified boolean true when the user edited the buffer during review
 ---@field _reconcile_timer any? debounce timer for the edit reconciler
 local Review = {}
 Review.__index = Review
@@ -142,6 +142,7 @@ function Review.new(path, buf, base, hunks)
 		expanded = {},
 		hunk_status = {},
 		user_modified = false,
+		_machine_tick = nil,
 	}, Review)
 end
 
@@ -233,6 +234,7 @@ function Review:apply_hunks()
 	self.placements = placements
 	self.proposal = out
 	vim.api.nvim_buf_set_lines(self.buf, 0, -1, false, out)
+	self._machine_tick = vim.api.nvim_buf_get_changedtick(self.buf)
 end
 
 ---Stores each extmark's id back on the placement so the live row can be
@@ -357,6 +359,7 @@ function Review:restore_fold(row)
 		if p.fold and anchor == row then
 			local lines = p.fold.lines
 			vim.api.nvim_buf_set_lines(self.buf, row + 1, row + 1, false, lines)
+			self._machine_tick = vim.api.nvim_buf_get_changedtick(self.buf)
 			p.adds = {}
 			p.kinds = {}
 			p.add_contents = {}
@@ -569,6 +572,7 @@ end
 
 function Review:reject_hunk(row)
 	self:_reject_placement(self:hunk_at_row(row))
+	state.maybe_complete(state.change_for_path(self.path))
 end
 
 ---@param self Review
@@ -603,18 +607,21 @@ end
 
 function Review:accept_hunk(row)
 	self:_accept_placement(self:hunk_at_row(row))
+	state.maybe_complete(state.change_for_path(self.path))
 end
 
 ---Sweep `core` over every still-pending placement, in buffer order.
 ---Returns the number of hunks handled
 ---@param self Review
 ---@param core fun(self: Review, p: Placement): boolean
+---@param include_conflicted boolean
 ---@return integer count
-function Review:_sweep(core)
+function Review:_sweep(core, include_conflicted)
 	local pending = self:pending_hunks()
 	local n = 0
 	for _, p in ipairs(pending) do
-		if self.hunk_status[p.hunk_id] == nil then
+		local st = self.hunk_status[p.hunk_id]
+		if st == nil or (include_conflicted and st == "conflicted") then
 			core(self, p)
 			n = n + 1
 		end
@@ -627,14 +634,14 @@ end
 ---@param self Review
 ---@return integer count
 function Review:accept_pending()
-	return self:_sweep(self._accept_placement)
+	return self:_sweep(self._accept_placement, false)
 end
 
 ---Reject every pending hunk in this review.
 ---@param self Review
 ---@return integer count
 function Review:reject_pending()
-	return self:_sweep(self._reject_placement)
+	return self:_sweep(self._reject_placement, true)
 end
 
 ---Enter single-buffer conflict resolution for the conflicted hunk covering `row`.
@@ -877,6 +884,7 @@ function Review:confirm_resolve()
 		end
 		self:render()
 		state.notify_change()
+		state.maybe_complete(state.change_for_path(self.path))
 	end
 
 	self._resolve = nil
@@ -937,6 +945,7 @@ end
 ---@param replacement string[]
 function Review:_apply_region(p, first, last, replacement)
 	vim.api.nvim_buf_set_lines(self.buf, first, last + 1, false, replacement)
+	self._machine_tick = vim.api.nvim_buf_get_changedtick(self.buf)
 	p.adds = {}
 	p.add_contents = nil
 	p.sign_marks = nil
@@ -1005,12 +1014,16 @@ function Review:open()
 	self:setup_keymaps()
 	state.set_review(self.path, self)
 
-	vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
+	self._reconcile_autocmd = vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
 		buffer = self.buf,
 		callback = function()
 			if self._resolve then
 				return
 			end
+			if vim.api.nvim_buf_get_changedtick(self.buf) == self._machine_tick then
+				return
+			end
+			self.user_modified = true
 			if self._reconcile_timer then
 				self._reconcile_timer:stop()
 				self._reconcile_timer:close()
@@ -1073,8 +1086,30 @@ function Review:_reconcile()
 	if changed then
 		self:render()
 	end
-	self.user_modified = not vim.deep_equal(buf_lines, self.proposal)
 	state.notify_change()
+end
+
+---Remove the review-buffer keymaps installed by setup_keymaps
+---@param self Review
+function Review:_teardown_keymaps()
+	if not self.buf or not vim.api.nvim_buf_is_valid(self.buf) then
+		return
+	end
+	local cfg = require("codeforge").config.keymaps or {}
+	for _, key in ipairs({
+		cfg.toggle_fold,
+		cfg.restore,
+		cfg.reject_hunk,
+		cfg.accept_hunk,
+		cfg.resolve_hunk,
+		cfg.dismiss,
+		cfg.next_hunk,
+		cfg.prev_hunk,
+	}) do
+		if key then
+			pcall(vim.keymap.del, "n", key, { buffer = self.buf })
+		end
+	end
 end
 
 ---@param self Review
@@ -1084,6 +1119,12 @@ function Review:dismiss()
 		self._reconcile_timer:close()
 		self._reconcile_timer = nil
 	end
+
+	if self._reconcile_autocmd then
+		pcall(vim.api.nvim_del_autocmd, self._reconcile_autocmd)
+		self._reconcile_autocmd = nil
+	end
+	self:_teardown_keymaps()
 
 	if self._resolve then
 		self:_close_resolve()

@@ -236,30 +236,16 @@ T["<C-x>A accepts pending hunks change-wide; triaged hunks survive <C-x>J"] = fu
 	child.type_keys("<C-x>A")
 	child.lua([[vim.wait(200)]])
 
-	MiniTest.expect.equality(
-		child.lua_get(
-			string.format(
-				[=[((require("codeforge.state").get_review(%s) or {}).hunk_status or {}).h1]=],
-				vim.inspect(path)
-			)
-		),
-		"accepted",
-		{ fail_reason = "<C-x>A should accept the pending hunk change-wide" }
-	)
+	MiniTest.expect.equality(F.hunk_outcome(path, "h1"), "accepted", {
+		fail_reason = "<C-x>A should accept the pending hunk change-wide",
+	})
 
 	-- <C-x>J must not clobber the already-triaged hunk
 	child.type_keys("<C-x>J")
 	child.lua([[vim.wait(200)]])
-	MiniTest.expect.equality(
-		child.lua_get(
-			string.format(
-				[=[((require("codeforge.state").get_review(%s) or {}).hunk_status or {}).h1]=],
-				vim.inspect(path)
-			)
-		),
-		"accepted",
-		{ fail_reason = "<C-x>J sweeps pending hunks only; triaged hunk must stay accepted" }
-	)
+	MiniTest.expect.equality(F.hunk_outcome(path, "h1"), "accepted", {
+		fail_reason = "<C-x>J sweeps pending hunks only; triaged hunk must stay accepted",
+	})
 end
 
 T["<C-x>J rejects pending hunks change-wide"] = function()
@@ -300,16 +286,9 @@ T["<C-x>J rejects pending hunks change-wide"] = function()
 	child.type_keys("<C-x>J")
 	child.lua([[vim.wait(200)]])
 
-	MiniTest.expect.equality(
-		child.lua_get(
-			string.format(
-				[=[((require("codeforge.state").get_review(%s) or {}).hunk_status or {}).h1]=],
-				vim.inspect(path)
-			)
-		),
-		"rejected",
-		{ fail_reason = "<C-x>J should reject the pending hunk change-wide" }
-	)
+	MiniTest.expect.equality(F.hunk_outcome(path, "h1"), "rejected", {
+		fail_reason = "<C-x>J should reject the pending hunk change-wide",
+	})
 end
 
 return T

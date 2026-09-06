@@ -40,25 +40,25 @@ end
 function M.seed_change(path, O, hunks)
 	child.lua(string.format(
 		[[
-	local state = require("codeforge.state")
-	state.reset()
-	state.changes = {
-		{
-			id = "change-001",
-			title = "Test change",
-			files = {
-				{
-					path = %s,
-					status = "modified",
-					base = %s,
-					hunks = %s,
-				},
-			},
-		},
-	}
-	state.current_change_index = 1
-	state.current_change_id = "change-001"
-	]],
+        local state = require("codeforge.state")
+        state.reset()
+        state.changes = {
+                {
+                        id = "change-001",
+                        title = "Test change",
+                        files = {
+                                {
+                                        path = %s,
+                                        status = "modified",
+                                        base = %s,
+                                        hunks = %s,
+                                },
+                        },
+                },
+        }
+        state.current_change_index = 1
+        state.current_change_id = "change-001"
+        ]],
 		vim.inspect(path),
 		vim.inspect(O),
 		vim.inspect(hunks)
@@ -86,24 +86,24 @@ function M.seed_added_file(path, lines)
 
 	child.lua(string.format(
 		[[
-		local state = require("codeforge.state")
-		state.reset()
-		state.changes = {
-			{
-				id = "change-001",
-				title = "Test change",
-				files = {
-					{
-						path = %s,
-						status = "added",
-						hunks = %s,
-					}
-				}
-			}
-		}
-		state.current_change_index = 1
-		state.current_change_id = "change-001"
-	]],
+                local state = require("codeforge.state")
+                state.reset()
+                state.changes = {
+                        {
+                                id = "change-001",
+                                title = "Test change",
+                                files = {
+                                        {
+                                                path = %s,
+                                                status = "added",
+                                                hunks = %s,
+                                        }
+                                }
+                        }
+                }
+                state.current_change_index = 1
+                state.current_change_id = "change-001"
+        ]],
 		vim.inspect(path),
 		vim.inspect({ hunk })
 	))
@@ -176,6 +176,45 @@ function M.has_keymap(buf, lhs)
 		end
 	end
 	return false
+end
+
+---A hunk's triage outcome: live from the review while the change is still
+---tracked, otherwise from the newest decision-log entry (the change may
+---have auto-completed and vanished).
+---@param path string
+---@param hunk_id string
+---@return string|nil status
+function M.hunk_outcome(path, hunk_id)
+	local live = child.lua_get(
+		string.format(
+			[=[((require("codeforge.state").get_review(%s) or {}).hunk_status or {})[%s]]=],
+			vim.inspect(path),
+			vim.inspect(hunk_id)
+		)
+	)
+	if live ~= nil and live ~= vim.NIL then
+		return live
+	end
+	return child.lua_get(string.format(
+		[=[
+                        (function()
+                                local state = require("codeforge.state")
+                                for i = #state.log, 1, -1 do
+                                        for _, f in ipairs(state.log[i].files or {}) do
+                                                if f.path == %s then
+                                                        for _, h in ipairs(f.hunks or {}) do
+                                                                if h.id == %s then
+                                                                        return h.status
+                                                                end
+                                                        end
+                                                end
+                                        end
+                                end
+                                return nil
+                        end)()]=],
+		vim.inspect(path),
+		vim.inspect(hunk_id)
+	))
 end
 
 return M

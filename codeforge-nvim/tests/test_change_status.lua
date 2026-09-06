@@ -149,7 +149,16 @@ local function open_review(path)
 end
 
 local function derive_live()
-	return child.lua_get([[require("codeforge.state").derive_status(require("codeforge.state").changes[1])]])
+	return child.lua_get([=[
+                (function()
+                        local state = require("codeforge.state")
+                        if state.changes[1] then
+                                return state.derive_status(state.changes[1])
+                        end
+                        -- the change auto-completed; its derived status is the logged one
+                        local last = state.log[#state.log]
+                        return last and last.status or nil
+                end)()]=])
 end
 
 ---Poll derive_status until it equals `want` or ~1.5s elapse (absorbs the
@@ -256,13 +265,16 @@ local function await_status_line(substr)
 end
 
 T["sidebar status line shows pending, then the derived status after triage"] = function()
-	local O = { "a", "b", "c", "d" }
+	local O = { "a", "b", "c", "d", "e" }
 	local path = F.tmp_path()
 	child.fn.writefile(O, path)
 	child.cmd("edit " .. path)
 	local h1 = F.replace_hunk("h1", 2, "b", "B")
 	local h2 = F.replace_hunk("h2", 4, "d", "D")
-	F.seed_change(path, O, { h1, h2 })
+	-- a still-pending third hunk keeps the change tracked after the mixed
+	-- triage below (a fully-triaged change auto-completes)
+	local h3 = F.replace_hunk("h3", 5, "e", "E")
+	F.seed_change(path, O, { h1, h2, h3 })
 
 	child.cmd("CodeForge")
 	local pending_line = await_status_line("pending")
@@ -289,19 +301,44 @@ T["sidebar status line shows pending, then the derived status after triage"] = f
 		{ fail_reason = "status line should stay pending while h2 is pending" }
 	)
 
+	-- rejecting the last pending-but-unresolved... h3 is still pending, so
+	-- the mixed accept/reject keeps the change pending; finish h3 to force
+	-- completion and pin that the sidebar drops the change
 	child.api.nvim_win_set_cursor(win, { 4, 0 })
 	child.type_keys("<C-x>j")
-	local status_line = await_status_line("modified")
 	MiniTest.expect.equality(
-		status_line:find("modified", 1, true) ~= nil,
+		await_status_line("pending"):find("pending", 1, true) ~= nil,
 		true,
-		{ fail_reason = "status line should show modified after mixed triage, got: " .. status_line }
+		{ fail_reason = "mixed triage with a pending hunk stays pending" }
 	)
-	MiniTest.expect.equality(
-		status_line:find("◐", 1, true) ~= nil,
-		true,
-		{ fail_reason = "status line should lead with the ◐ icon, got: " .. status_line }
-	)
+
+	child.api.nvim_win_set_cursor(win, { 5, 0 })
+	child.type_keys("<C-x>j")
+	-- fully triaged -> auto-completion removes the change; the sidebar falls
+	-- back to the empty state
+	local ok_empty = false
+	for _ = 1, 30 do
+		local sb = sidebar_buf()
+		local lines = sb and child.api.nvim_buf_get_lines(sb, 0, -1, false) or {}
+		local found = false
+		for _, l in ipairs(lines) do
+			if l:find("No pending changes", 1, true) then
+				found = true
+				break
+			end
+		end
+		if found then
+			ok_empty = true
+			break
+		end
+		child.lua([[vim.wait(50)]])
+	end
+	MiniTest.expect.equality(ok_empty, true, {
+		fail_reason = "fully-triaged change should leave the sidebar (auto-completed)",
+	})
+	MiniTest.expect.equality(#child.lua_get([[require("codeforge.state").log]]), 1, {
+		fail_reason = "completion should log the mixed-triage outcome",
+	})
 end
 
 return T

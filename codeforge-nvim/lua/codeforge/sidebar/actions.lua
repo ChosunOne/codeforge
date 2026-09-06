@@ -15,6 +15,7 @@ function M.toggle_file(path)
 			else
 				file.decision = file.decision == "accepted" and "rejected" or "accepted"
 				state.notify_change()
+				state.maybe_complete(change)
 			end
 			return
 		end
@@ -59,6 +60,25 @@ function M.goto_hunk(path, hunk_id)
 	end
 end
 
+---Count hunks marked conflicted across the change's modified files.
+---@param change Change
+---@return integer count
+local function count_conflicted(change)
+	local state = require("codeforge.state")
+	local n = 0
+	for _, file in ipairs(change.files or {}) do
+		local review = state.get_review(file.path)
+		if review then
+			for _, hunk in ipairs(file.hunks or {}) do
+				if review.hunk_status[hunk.id] == "conflicted" then
+					n = n + 1
+				end
+			end
+		end
+	end
+	return n
+end
+
 ---Sweep every pending hunk across all files of the current change.
 ---@param verb "accept" | "reject"
 ---@return integer swept number of hunks handled
@@ -93,6 +113,22 @@ local function sweep_pending(verb)
 	if decided_atomic then
 		state.notify_change()
 	end
+
+	state.maybe_complete(change)
+
+	local conflicted = count_conflicted(change)
+	if conflicted > 0 then
+		local km = require("codeforge").config.keymaps or {}
+		vim.notify(
+			string.format(
+				"CodeForge: %d hunk(s) left in conflict - open the review and press %s on the hunk to resolve",
+				conflicted,
+				km.resolve_hunk or "<C-x>c"
+			),
+			vim.log.levels.WARN
+		)
+	end
+
 	return total
 end
 

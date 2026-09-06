@@ -133,12 +133,15 @@ T["accepting a hunk shows a green full circle in the sidebar; pending stays empt
 end
 
 T["rejecting a hunk shows a red full circle, distinct from accepted green"] = function()
-	local O = { "a", "b", "c", "d" }
+	local O = { "a", "b", "c", "d", "e" }
 	local path = F.tmp_path()
 	child.fn.writefile(O, path)
 	local h1 = modify_hunk("hunk-2", 2, "b", "B")
 	local h2 = modify_hunk("hunk-4", 4, "d", "D")
-	F.seed_change(path, O, { h1, h2 })
+	-- a third, still-pending hunk keeps the change tracked after h1+h2 are
+	-- triaged (a fully-triaged change auto-completes and leaves the sidebar)
+	local h3 = modify_hunk("hunk-5", 5, "e", "E")
+	F.seed_change(path, O, { h1, h2, h3 })
 
 	child.cmd("CodeForge")
 	child.type_keys("3gg")
