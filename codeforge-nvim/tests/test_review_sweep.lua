@@ -215,13 +215,15 @@ T["actions sweep mixes live reviews with headless files"] = function()
 	Q.expect_lines("file B buffer", buf_lines(pb), { "B1", "b2" })
 end
 
-T["sweep skips atomic files entirely"] = function()
+T["sweep decides undecided atomic files; decided ones stay put"] = function()
 	local OA = { "a1", "a2" }
 	local pa = F.tmp_path()
 	child.fn.writefile(OA, pa)
 	local added = F.tmp_path()
 	local deleted = F.tmp_path()
+	local deleted2 = F.tmp_path()
 	child.fn.writefile({ "gone" }, deleted)
+	child.fn.writefile({ "gone2" }, deleted2)
 	child.lua(
 		string.format(
 			[[
@@ -234,6 +236,7 @@ T["sweep skips atomic files entirely"] = function()
                                 { path = %s, status = "modified", base = %s, hunks = { %s } },
                                 { path = %s, status = "added", hunks = {} },
                                 { path = %s, status = "deleted", hunks = {} },
+                                { path = %s, status = "deleted", hunks = {}, decision = "rejected" },
                         },
                 } }
                 state.current_change_index = 1
@@ -243,7 +246,8 @@ T["sweep skips atomic files entirely"] = function()
 			vim.inspect(OA),
 			vim.inspect(F.replace_hunk("a-h1", 2, "a2", "A2")),
 			vim.inspect(added),
-			vim.inspect(deleted)
+			vim.inspect(deleted),
+			vim.inspect(deleted2)
 		)
 	)
 
@@ -251,14 +255,38 @@ T["sweep skips atomic files entirely"] = function()
 
 	MiniTest.expect.equality(hunk_status(pa, "a-h1"), "accepted", { fail_reason = "modified file swept" })
 	MiniTest.expect.equality(
+		child.lua_get(string.format([[require("codeforge.state").changes[1].files[2].decision]], vim.inspect(added))),
+		"accepted",
+		{ fail_reason = "undecided added file should be accepted by the sweep" }
+	)
+	MiniTest.expect.equality(
+		child.lua_get(string.format([[require("codeforge.state").changes[1].files[3].decision]])),
+		"accepted",
+		{ fail_reason = "undecided deleted file should be accepted by the sweep" }
+	)
+	MiniTest.expect.equality(
+		child.lua_get(string.format([[require("codeforge.state").changes[1].files[4].decision]])),
+		"rejected",
+		{ fail_reason = "already-decided atomic file must keep its decision" }
+	)
+	MiniTest.expect.equality(
 		child.lua_get(string.format([[require("codeforge.state").get_review(%s) == nil]], vim.inspect(added))),
 		true,
 		{ fail_reason = "no review should be created for the added file" }
 	)
+
+	-- reject sweep: undecided atomics flip to rejected, decided ones untouched
+	child.lua([[require("codeforge.state").changes[1].files[2].decision = nil]])
+	child.lua_get([[require("codeforge.sidebar.actions").reject_pending()]])
 	MiniTest.expect.equality(
-		child.lua_get(string.format([[require("codeforge.state").get_review(%s) == nil]], vim.inspect(deleted))),
-		true,
-		{ fail_reason = "no review should be created for the deleted file" }
+		child.lua_get(string.format([[require("codeforge.state").changes[1].files[2].decision]])),
+		"rejected",
+		{ fail_reason = "reject sweep should decide the added file as rejected" }
+	)
+	MiniTest.expect.equality(
+		child.lua_get(string.format([[require("codeforge.state").changes[1].files[4].decision]])),
+		"rejected",
+		{ fail_reason = "already-rejected deleted file must keep its decision" }
 	)
 end
 

@@ -71,8 +71,15 @@ local function sweep_pending(verb)
 
 	local buffer = require("codeforge.review.buffer")
 	local total = 0
+	local decided_atomic = false
 	for _, file in ipairs(change.files or {}) do
-		if file.status == "modified" and #(file.hunks or {}) > 0 then
+		if file.status == "added" or file.status == "deleted" then
+			if file.decision == nil then
+				file.decision = verb == "accept" and "accepted" or "rejected"
+				decided_atomic = true
+				total = total + 1
+			end
+		elseif file.status == "modified" and #(file.hunks or {}) > 0 then
 			local review = state.get_review(file.path) or buffer.ensure_review(file.path)
 			if review then
 				if verb == "accept" then
@@ -82,6 +89,9 @@ local function sweep_pending(verb)
 				end
 			end
 		end
+	end
+	if decided_atomic then
+		state.notify_change()
 	end
 	return total
 end
