@@ -232,7 +232,7 @@ end
 local function sidebar_buf()
 	for _, w in ipairs(child.api.nvim_list_wins()) do
 		local b = child.api.nvim_win_get_buf(w)
-		if child.api.nvim_buf_get_option(b, "filetype") == "codeforge" then
+		if child.api.nvim_get_option_value("filetype", { buf = b }) == "codeforge" then
 			return b
 		end
 	end

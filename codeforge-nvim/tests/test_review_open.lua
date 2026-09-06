@@ -138,7 +138,7 @@ T["open does not write to disk"] = function()
 
 	local buf = Q.find_buf(path)
 	MiniTest.expect.equality(
-		child.api.nvim_buf_get_option(buf, "modified"),
+		child.api.nvim_get_option_value("modified", { buf = buf }),
 		true,
 		{ fail_reason = "buffer should be modified after loading P" }
 	)
@@ -326,7 +326,7 @@ T["open on a newly added file shows the new content in the review buffer"] = fun
 		{ fail_reason = "review buffer window not focused" }
 	)
 	MiniTest.expect.equality(
-		child.api.nvim_buf_get_option(buf, "filetype"),
+		child.api.nvim_get_option_value("filetype", { buf = buf }),
 		"lua",
 		{ fail_reason = "review buffer for a .lua file should have filetype=lua" }
 	)

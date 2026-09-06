@@ -5,6 +5,7 @@ M.config = {
 		next_change = "<C-]>",
 		prev_change = "<C-[>",
 		toggle_file = "o",
+		open_file = "<CR>",
 		toggle_fold = "<C-x>t",
 		restore = "<C-x>r",
 		reject_hunk = "<C-x>j",
@@ -38,8 +39,8 @@ function M.setup(opts)
 				position = "right",
 			},
 		},
-		mappings = {
-			open = "o",
+		element_mappings = {
+			codeforge = {},
 		},
 	})
 	local element, refresh = require("codeforge.sidebar.element")(M.config)
@@ -51,8 +52,7 @@ function M.setup(opts)
 		local wins = vim.api.nvim_list_wins()
 		for _, win in ipairs(wins) do
 			local buf = vim.api.nvim_win_get_buf(win)
-			local name = vim.api.nvim_buf_get_name(buf)
-			if name:match("CodeForge") then
+			if vim.api.nvim_get_option_value("filetype", { buf = buf }) == "codeforge" then
 				vim.api.nvim_set_current_win(win)
 				break
 			end

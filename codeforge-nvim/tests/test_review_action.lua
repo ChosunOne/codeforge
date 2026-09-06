@@ -385,7 +385,7 @@ T["<C-x>c resolve flow: take ours then confirm yields U[R] and clears the confli
 		"c",
 	})
 	MiniTest.expect.equality(
-		child.api.nvim_buf_get_option(resolve_buf, "modifiable") == true,
+		child.api.nvim_get_option_value("modifiable", { buf = resolve_buf }) == true,
 		true,
 		{ fail_reason = "resolve buffer should be editable" }
 	)
@@ -634,12 +634,12 @@ T["resolve view: single editable conflict buffer with git merge markers + syntax
 	MiniTest.expect.equality(resolve_win ~= nil, true, { fail_reason = "resolve window not found" })
 
 	MiniTest.expect.equality(
-		child.api.nvim_buf_get_option(resolve_buf, "filetype"),
+		child.api.nvim_get_option_value("filetype", { buf = resolve_buf }),
 		"lua",
 		{ fail_reason = "resolve buffer should have filetype=lua" }
 	)
 	MiniTest.expect.equality(
-		child.api.nvim_buf_get_option(resolve_buf, "modifiable") == true,
+		child.api.nvim_get_option_value("modifiable", { buf = resolve_buf }) == true,
 		true,
 		{ fail_reason = "resolve buffer should be editable" }
 	)

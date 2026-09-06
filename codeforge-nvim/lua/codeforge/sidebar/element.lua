@@ -1,6 +1,5 @@
 local Canvas = require("dapui.render.canvas")
 local util = require("dapui.util")
-local config = require("dapui.config")
 local highlight = require("codeforge.highlight")
 
 ---Glyph + highlight group for a hunk's review triage status
@@ -37,10 +36,30 @@ return function(user_config)
 	local u_config = user_config or {}
 
 	local state = require("codeforge.state")
+	local actions = require("codeforge.sidebar.actions")
+
+	local row_nodes = {}
+	local applied_lhs = {}
+	local rendering = false
 
 	local send_ready = util.create_render_loop(function()
 		element.render()
 	end)
+
+	local function drop_applied()
+		if #applied_lhs == 0 then
+			return
+		end
+		local buf = element.buffer()
+		if not buf or not vim.api.nvim_buf_is_valid(buf) then
+			applied_lhs = {}
+			return
+		end
+		for _, lhs in ipairs(applied_lhs) do
+			pcall(vim.keymap.del, "n", lhs, { buffer = buf })
+		end
+		applied_lhs = {}
+	end
 
 	local function setup_keymaps()
 		local buf = element.buffer()
@@ -48,41 +67,79 @@ return function(user_config)
 			return
 		end
 
-		if u_config.keymaps and u_config.keymaps.next_change then
-			vim.keymap.set("n", u_config.keymaps.next_change, function()
-				state.next_change()
-			end, {
-				buf = buf,
-				silent = true,
-				desc = "CodeForge: Next change",
-			})
-			vim.keymap.set("n", u_config.keymaps.prev_change, function()
-				state.prev_change()
-			end, {
-				buf = buf,
-				silent = true,
-				desc = "CodeForge: Previous change",
-			})
+		local km = u_config.keymaps
+		if not km then
+			return
 		end
+
+		local function map(key, fn, desc)
+			if not key then
+				return
+			end
+			vim.keymap.set("n", key, fn, { buffer = buf, silent = true, desc = "CodeForge: " .. desc })
+			applied_lhs[#applied_lhs + 1] = key
+		end
+
+		map(km.next_change, function()
+			state.next_change()
+		end, "Next change")
+		map(km.prev_change, function()
+			state.prev_change()
+		end, "Previous change")
+		map(km.toggle_file, function()
+			local node = row_nodes[vim.fn.line(".")]
+			if node and node.kind == "file" then
+				actions.toggle_file(node.path)
+			end
+		end, "Toggle file expansion")
+		map(km.open_file, function()
+			local node = row_nodes[vim.fn.line(".")]
+			if not node then
+				return
+			end
+			if node.kind == "hunk" then
+				actions.goto_hunk(node.path, node.hunk_id)
+				return
+			end
+			if node.kind == "file" then
+				local change = state.get_current_change()
+				for _, file in ipairs(change and change.files or {}) do
+					if file.path == node.path then
+						if file.status ~= "deleted" then
+							actions.open_review(node.path)
+						end
+						return
+					end
+				end
+			end
+		end, "Open review buffer / jump to hunk")
 	end
 
 	function element.render()
+		rendering = true
 		local canvas = Canvas.new()
 		local change = state.get_current_change()
+		local rows = {}
+		local current_line = 1
+
+		local function track(node)
+			rows[current_line] = node
+			current_line = current_line + 1
+		end
 
 		if change then
 			local index = state.get_change_index()
 			local total = #state.get_changes()
 			canvas:write(string.format("[%d/%d] %s\n", index, total, change.title))
+			track({ kind = "header" })
 			local change_status = state.derive_status(change)
 			local glyph, glyph_hl = change_status_glyph(change_status)
 			canvas:write(glyph .. " ", { group = glyph_hl })
 			canvas:write(change_status .. "\n", { group = glyph_hl })
-			local current_line = 3
+			track({ kind = "header" })
 
 			if change.files and #change.files > 0 then
 				for _, file in ipairs(change.files) do
-					local expandable = file.status ~= "deleted"
 					local is_expanded = state.is_expanded(file.path)
 					local status_upper = file.status:upper():sub(1, 1)
 
@@ -95,54 +152,21 @@ return function(user_config)
 						canvas:write(file.path .. " ", { group = "CodeForgeFile" })
 						local status_hl = require("codeforge.highlight").get_status_hl(file.status, false)
 						canvas:write("[" .. status_upper .. "]\n", { group = status_hl })
-						canvas:add_mapping("open", function()
-							state.toggle_file(file.path)
-						end, { line = current_line })
-
-						canvas:add_mapping("expand", function()
-							require("codeforge.review.buffer").open(file.path)
-						end, { line = current_line })
-
-						current_line = current_line + 1
+						track({ kind = "file", path = file.path })
 
 						if is_expanded and file.hunks and #file.hunks > 0 then
 							local review = state.get_review(file.path)
 							for _, hunk in ipairs(file.hunks) do
 								local hunk_status_upper = hunk.status:upper():sub(1, 1)
 								canvas:write("      ")
-								local glyph, glyph_hl = status_glyph(review and review.hunk_status[hunk.id])
-								canvas:write(glyph .. " ", { group = glyph_hl })
+								local hg, hg_hl = status_glyph(review and review.hunk_status[hunk.id])
+								canvas:write(hg .. " ", { group = hg_hl })
 								local live_row = review and review:hunk_row(hunk.id) or nil
 								canvas:write("L" .. (live_row or hunk.new_start) .. " ")
 								canvas:write(hunk.description .. " ")
 								local status_hl = require("codeforge.highlight").get_status_hl(hunk.status, true)
 								canvas:write("[" .. hunk_status_upper .. "]\n", { group = status_hl })
-								local hunk_id = hunk.id
-								canvas:add_mapping("expand", function()
-									local sidebar_win = vim.api.nvim_get_current_win()
-									local buffer = require("codeforge.review.buffer")
-									local review = state.get_review(file.path)
-									if not review then
-										buffer.open(file.path)
-										review = state.get_review(file.path)
-									else
-										buffer.show_review(file.path)
-									end
-									if review then
-										local row = review:hunk_row(hunk_id)
-										if row then
-											local win = buffer.win_for_buf(review.buf)
-											if win then
-												vim.api.nvim_win_set_cursor(win, { row, 0 })
-												vim.api.nvim_win_call(win, function()
-													vim.cmd("normal! zz")
-												end)
-											end
-										end
-									end
-									vim.api.nvim_set_current_win(sidebar_win)
-								end, { line = current_line })
-								current_line = current_line + 1
+								track({ kind = "hunk", path = file.path, hunk_id = hunk.id })
 							end
 						end
 					else
@@ -151,26 +175,34 @@ return function(user_config)
 						local status_hl = require("codeforge.highlight").get_status_hl(file.status, false)
 						canvas:write(" ")
 						canvas:write("[" .. status_upper .. "]\n", { group = status_hl })
-						canvas:add_mapping("open", function()
-							file.decision = file.decision == "accepted" and "rejected" or "accepted"
-							state.notify_change()
-						end, { line = current_line })
-						if expandable then
-							canvas:add_mapping("expand", function()
-								require("codeforge.review.buffer").open(file.path)
-							end, { line = current_line })
-						end
-						current_line = current_line + 1
+						track({ kind = "file", path = file.path })
 					end
 				end
 			end
 		else
 			canvas:write("CodeForge - Pending Review Panel\n")
+			track({ kind = "header" })
 			canvas:write("\n")
+			track({ kind = "blank" })
 			canvas:write("No pending changes\n")
+			track({ kind = "blank" })
 		end
 
-		canvas:render_buffer(element.buffer(), config.element_mapping("codeforge"))
+		row_nodes = rows
+
+		local no_keys = {}
+		canvas:render_buffer(element.buffer(), {
+			expand = no_keys,
+			open = no_keys,
+			remove = no_keys,
+			edit = no_keys,
+			repl = no_keys,
+			toggle = no_keys,
+			watch = no_keys,
+		})
+
+		rendering = false
+		drop_applied()
 
 		setup_keymaps()
 	end

@@ -29,7 +29,7 @@ T["sidebar shows codeforge title"] = function()
 	local wins = child.api.nvim_list_wins()
 	local sidebar_win = wins[#wins]
 	local buf = child.api.nvim_win_get_buf(sidebar_win)
-	local ft = child.api.nvim_buf_get_option(buf, "filetype")
+	local ft = child.api.nvim_get_option_value("filetype", { buf = buf })
 
 	MiniTest.expect.equality(ft, "codeforge")
 
@@ -48,7 +48,7 @@ T["sidebar opens on right side"] = function()
 	local sidebar_win = nil
 	for _, win in ipairs(wins) do
 		local buf = child.api.nvim_win_get_buf(win)
-		local ft = child.api.nvim_buf_get_option(buf, "filetype")
+		local ft = child.api.nvim_get_option_value("filetype", { buf = buf })
 		if ft == "codeforge" then
 			sidebar_win = win
 			break

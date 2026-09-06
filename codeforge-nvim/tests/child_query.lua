@@ -62,7 +62,7 @@ end
 ---@param buf integer
 ---@return boolean
 function M.is_sidebar_buf(buf)
-	return child.api.nvim_buf_get_option(buf, "filetype") == "codeforge"
+	return child.api.nvim_get_option_value("filetype", { buf = buf }) == "codeforge"
 end
 
 function M.focus_buf(buf)
