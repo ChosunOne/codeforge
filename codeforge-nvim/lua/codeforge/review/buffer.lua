@@ -91,20 +91,20 @@ local function base_from_status(file, buf)
 	return lines
 end
 
----Begin reviewing `path`: snapshot, build, load into the real buffer.
+---Begin (or resume) reviewing `path`: snapshot, build, load into the real buffer.
 ---@param path string
-function M.open(path)
+---@return Review|nil review nil when no change covers `path`
+function M.ensure_review(path)
 	local existing = state.get_review(path)
 
 	if existing then
-		show_in_main(existing.buf)
-		return
+		return existing
 	end
 
 	local file = find_file(path)
 	if not file then
 		vim.notify("CodeForge: no change for " .. path, vim.log.levels.WARN)
-		return
+		return nil
 	end
 
 	local buf = find_loaded_buf(path)
@@ -137,7 +137,18 @@ function M.open(path)
 	local base = file.base or base_from_status(file, buf)
 	local review = Review.new(path, buf, base, file.hunks or {})
 	review:open()
-	show_in_main(buf)
+	return review
+end
+
+---Begin reviewing `path`: snapshot, build, load into the buffer
+---and show it in the main window.
+---@param path string
+function M.open(path)
+	local review = M.ensure_review(path)
+	if not review then
+		return
+	end
+	show_in_main(review.buf)
 end
 
 ---Show an already-open review for `path` in the main window

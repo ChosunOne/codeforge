@@ -128,12 +128,25 @@ T["sidebar buffer-local normal-mode maps are exactly our configured keys"] = fun
 	local maps = child.api.nvim_buf_get_keymap(sb, "n")
 	local lhs = {}
 	for _, m in ipairs(maps) do
-		lhs[#lhs + 1] = m.lhs
+		lhs[m.lhs] = true
 	end
-	table.sort(lhs)
-	MiniTest.expect.equality(lhs, { "<C-[>", "<C-]>", "<CR>", "o" }, {
-		fail_reason = "buffer maps should be exactly next/prev change + toggle_file + open_file, got "
-			.. vim.inspect(lhs),
+	local expected =
+		{ ["<CR>"] = true, ["<C-[>"] = true, ["<C-]>"] = true, ["<C-X>A"] = true, ["<C-X>J"] = true, ["o"] = true }
+	local missing, extra = {}, {}
+	for k in pairs(expected) do
+		if not lhs[k] then
+			missing[#missing + 1] = k
+		end
+	end
+	for k in pairs(lhs) do
+		if not expected[k] then
+			extra[#extra + 1] = k
+		end
+	end
+	MiniTest.expect.equality(#missing == 0 and #extra == 0, true, {
+		fail_reason = "buffer maps should be nav + toggle/open + change-scoped sweeps; missing=" .. vim.inspect(
+			missing
+		) .. " extra=" .. vim.inspect(extra),
 	})
 end
 
@@ -183,6 +196,120 @@ T["keybinds come from config.keymaps, not hardcoded dap-ui actions"] = function(
 	)
 	-- restore for other tests
 	child.lua([[require("codeforge").config.keymaps.toggle_file = "o"]])
+end
+
+T["<C-x>A accepts pending hunks change-wide; triaged hunks survive <C-x>J"] = function()
+	local O = { "a1", "a2", "a3" }
+	local path = F.tmp_path()
+	child.fn.writefile(O, path)
+	child.lua(string.format(
+		[[
+                local state = require("codeforge.state")
+                state.reset()
+                state.changes = { {
+                        id = "change-001",
+                        title = "Sweep",
+                        files = { {
+                                path = %s,
+                                status = "modified",
+                                base = %s,
+                                hunks = { {
+                                        id = "h1",
+                                        old_start = 2,
+                                        old_lines = 1,
+                                        new_start = 2,
+                                        new_lines = 1,
+                                        lines = { "-a2", "+A2" },
+                                        status = "modified",
+                                } },
+                        } },
+                } }
+                state.current_change_index = 1
+                state.current_change_id = "change-001"
+        ]],
+		vim.inspect(path),
+		vim.inspect(O)
+	))
+	child.cmd("CodeForge")
+	await_line(3, vim.fn.fnamemodify(path, ":t"))
+
+	child.type_keys("<C-x>A")
+	child.lua([[vim.wait(200)]])
+
+	MiniTest.expect.equality(
+		child.lua_get(
+			string.format(
+				[=[((require("codeforge.state").get_review(%s) or {}).hunk_status or {}).h1]=],
+				vim.inspect(path)
+			)
+		),
+		"accepted",
+		{ fail_reason = "<C-x>A should accept the pending hunk change-wide" }
+	)
+
+	-- <C-x>J must not clobber the already-triaged hunk
+	child.type_keys("<C-x>J")
+	child.lua([[vim.wait(200)]])
+	MiniTest.expect.equality(
+		child.lua_get(
+			string.format(
+				[=[((require("codeforge.state").get_review(%s) or {}).hunk_status or {}).h1]=],
+				vim.inspect(path)
+			)
+		),
+		"accepted",
+		{ fail_reason = "<C-x>J sweeps pending hunks only; triaged hunk must stay accepted" }
+	)
+end
+
+T["<C-x>J rejects pending hunks change-wide"] = function()
+	local O = { "a1", "a2" }
+	local path = F.tmp_path()
+	child.fn.writefile(O, path)
+	child.lua(string.format(
+		[[
+                local state = require("codeforge.state")
+                state.reset()
+                state.changes = { {
+                        id = "change-001",
+                        title = "Sweep",
+                        files = { {
+                                path = %s,
+                                status = "modified",
+                                base = %s,
+                                hunks = { {
+                                        id = "h1",
+                                        old_start = 1,
+                                        old_lines = 1,
+                                        new_start = 1,
+                                        new_lines = 1,
+                                        lines = { "-a1", "+A1" },
+                                        status = "modified",
+                                } },
+                        } },
+                } }
+                state.current_change_index = 1
+                state.current_change_id = "change-001"
+        ]],
+		vim.inspect(path),
+		vim.inspect(O)
+	))
+	child.cmd("CodeForge")
+	await_line(3, vim.fn.fnamemodify(path, ":t"))
+
+	child.type_keys("<C-x>J")
+	child.lua([[vim.wait(200)]])
+
+	MiniTest.expect.equality(
+		child.lua_get(
+			string.format(
+				[=[((require("codeforge.state").get_review(%s) or {}).hunk_status or {}).h1]=],
+				vim.inspect(path)
+			)
+		),
+		"rejected",
+		{ fail_reason = "<C-x>J should reject the pending hunk change-wide" }
+	)
 end
 
 return T

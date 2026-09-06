@@ -59,4 +59,43 @@ function M.goto_hunk(path, hunk_id)
 	end
 end
 
+---Sweep every pending hunk across all files of the current change.
+---@param verb "accept" | "reject"
+---@return integer swept number of hunks handled
+local function sweep_pending(verb)
+	local state = require("codeforge.state")
+	local change = state.get_current_change()
+	if not change then
+		return 0
+	end
+
+	local buffer = require("codeforge.review.buffer")
+	local total = 0
+	for _, file in ipairs(change.files or {}) do
+		if file.status == "modified" and #(file.hunks or {}) > 0 then
+			local review = state.get_review(file.path) or buffer.ensure_review(file.path)
+			if review then
+				if verb == "accept" then
+					total = total + review:accept_pending()
+				else
+					total = total + review:reject_pending()
+				end
+			end
+		end
+	end
+	return total
+end
+
+---Accept every pending hunk in the current change.
+---@return integer swept
+function M.accept_pending()
+	return sweep_pending("accept")
+end
+
+---Reject every pending hunk in the current change
+---@return integer swept
+function M.reject_pending()
+	return sweep_pending("reject")
+end
+
 return M

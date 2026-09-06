@@ -544,11 +544,11 @@ end
 ---the added lines; a deletion fold is restored as real text. Marks the hunk
 ---'rejected'. No-op if no hunk covers `row` or it is already rejected.
 ---@param self Review
----@param row integer 0-indexed buffer row
-function Review:reject_hunk(row)
-	local p = self:hunk_at_row(row)
+---@param p Placement?
+---@return boolean handled
+function Review:_reject_placement(p)
 	if not p or self.hunk_status[p.hunk_id] == "rejected" then
-		return
+		return false
 	end
 	local adds = p.adds or {}
 	local first = p.fold and p.fold.anchor_row + 1 or adds[1]
@@ -556,7 +556,7 @@ function Review:reject_hunk(row)
 	if not first then
 		self.hunk_status[p.hunk_id] = "rejected"
 		state.notify_change()
-		return
+		return true
 	end
 
 	local replacement = merge.region_in(self.base_content, self.buf_snapshot, p.region_start, p.region_count)
@@ -564,18 +564,25 @@ function Review:reject_hunk(row)
 	self.hunk_status[p.hunk_id] = "rejected"
 	self:render()
 	state.notify_change()
+	return true
 end
 
-function Review:accept_hunk(row)
-	local p = self:hunk_at_row(row)
+function Review:reject_hunk(row)
+	self:_reject_placement(self:hunk_at_row(row))
+end
+
+---@param self Review
+---@param p Placement?
+---@return boolean handled
+function Review:_accept_placement(p)
 	if not p or self.hunk_status[p.hunk_id] == "rejected" then
-		return
+		return false
 	end
 	local first, last = self:_region_rows(p)
 	if not first then
 		self.hunk_status[p.hunk_id] = "accepted"
 		state.notify_change()
-		return
+		return true
 	end
 
 	local ours = merge.region_in(self.base_content, self.buf_snapshot, p.region_start, p.region_count)
@@ -585,12 +592,49 @@ function Review:accept_hunk(row)
 	if res.conflict then
 		self.hunk_status[p.hunk_id] = "conflicted"
 		state.notify_change()
-		return
+		return true
 	end
 	self:_apply_region(p, first, last, res.lines)
 	self.hunk_status[p.hunk_id] = "accepted"
 	self:render()
 	state.notify_change()
+	return true
+end
+
+function Review:accept_hunk(row)
+	self:_accept_placement(self:hunk_at_row(row))
+end
+
+---Sweep `core` over every still-pending placement, in buffer order.
+---Returns the number of hunks handled
+---@param self Review
+---@param core fun(self: Review, p: Placement): boolean
+---@return integer count
+function Review:_sweep(core)
+	local pending = self:pending_hunks()
+	local n = 0
+	for _, p in ipairs(pending) do
+		if self.hunk_status[p.hunk_id] == nil then
+			core(self, p)
+			n = n + 1
+		end
+	end
+	return n
+end
+
+---Accept every pending hunk in this review.
+---Returns the number of hunks handled.
+---@param self Review
+---@return integer count
+function Review:accept_pending()
+	return self:_sweep(self._accept_placement)
+end
+
+---Reject every pending hunk in this review.
+---@param self Review
+---@return integer count
+function Review:reject_pending()
+	return self:_sweep(self._reject_placement)
 end
 
 ---Enter single-buffer conflict resolution for the conflicted hunk covering `row`.
