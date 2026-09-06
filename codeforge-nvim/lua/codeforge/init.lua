@@ -27,6 +27,7 @@ function M.setup(opts)
 	opts = opts or {}
 	M.config = vim.tbl_extend("force", M.config, opts)
 	M.state = require("codeforge.state")
+	M.state.log_file = vim.fn.stdpath("data") .. "/codeforge/log.json"
 
 	local dapui = require("dapui")
 	dapui.setup({

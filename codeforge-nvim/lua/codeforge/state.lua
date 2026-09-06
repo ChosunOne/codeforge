@@ -7,6 +7,7 @@ M.expanded_files = {}
 M.selected_path = nil
 M.last_view_state = nil
 M.reviews = {}
+M.log = {}
 M._on_change = nil
 
 function M.reset()
@@ -15,6 +16,7 @@ function M.reset()
 	M.current_change_index = nil
 	M.expanded_files = {}
 	M.reviews = {}
+	M.log = {}
 	M.selected_path = nil
 	M.last_view_state = nil
 end
@@ -172,6 +174,125 @@ function M.toggle_file(file_path)
 	if M._on_change then
 		M._on_change()
 	end
+end
+
+---Find a change's 1-based position by id.
+---@param id string
+---@return number|nil
+local function change_index(id)
+	for i, change in ipairs(M.changes) do
+		if change.id == id then
+			return i
+		end
+	end
+	return nil
+end
+
+---Build a decision log entry for a completed change.
+---Captures: id, title, timestamp, derived status, and per-file outcomes.
+---@param change Change
+---@return table entry
+function M.build_log_entry(change)
+	local entry = {
+		id = change.id,
+		title = change.title,
+		timestamp = os.time(),
+		status = M.derive_status(change),
+		files = {},
+	}
+
+	for _, file in ipairs(change.files or {}) do
+		local review = M.reviews[file.path]
+		local fentry = {
+			path = file.path,
+			status = file.status,
+		}
+		if file.status == "added" or file.status == "deleted" then
+			fentry.decision = file.decision
+		else
+			fentry.modified = review and review.user_modified or nil
+			fentry.hunks = {}
+			for _, hunk in ipairs(file.hunks or {}) do
+				fentry.hunks[#fentry.hunks + 1] = {
+					id = hunk.id,
+					status = review and review.hunk_status[hunk.id] or nil,
+				}
+			end
+		end
+		entry.files[#entry.files + 1] = fentry
+	end
+	return entry
+end
+
+---Append an entry to the in-memory decision log (and the on-disk log file).
+---@param entry table
+function M.append_log(entry)
+	table.insert(M.log, entry)
+	M.persist_log(entry)
+end
+
+---Write-through append of `entry` to `M.log_file` as a JSON array,
+---Tolerates a missing/corrupt file (treated as empty).
+---@param entry table
+function M.persist_log(entry)
+	if not M.log_file then
+		return
+	end
+
+	local ok, err = pcall(function()
+		local existing = {}
+		local f = io.open(M.log_file, "r")
+		if f then
+			local raw = f:read("*a")
+			f:close()
+			local okd, decoded = pcall(vim.json.decode, raw)
+			if okd and type(decoded) == "table" then
+				existing = decoded
+			end
+		end
+		existing[#existing + 1] = entry
+
+		local dir = vim.fn.fnamemodify(M.log_file, ":h")
+		vim.fn.mkdir(dir, "p")
+		local out = io.open(M.log_file, "w")
+		out:write(vim.json.encode(existing))
+		out:close()
+	end)
+	if not ok then
+		pcall(vim.notify, "CodeForge: failed to persist decision log: " .. tostring(err), vim.log.levels.WARN)
+	end
+end
+
+---Remove the change with `id` from the change list.
+---@param id string
+---@return boolean removed true when a change with `id` existed
+function M.remove_change(id)
+	local idx = change_index(id)
+	if not idx then
+		return false
+	end
+
+	local change = M.changes[idx]
+	M.append_log(M.build_log_entry(change))
+	table.remove(M.changes, idx)
+	M.expanded_files[id] = nil
+
+	if M.current_change_index ~= nil then
+		if idx < M.current_change_index then
+			M.current_change_index = M.current_change_index - 1
+		elseif idx == M.current_change_index then
+			M.current_change_index = math.min(M.current_change_index, #M.changes)
+			if #M.changes == 0 then
+				M.current_change_index = nil
+			end
+		end
+
+		local current = M.get_current_change()
+		M.current_change_id = current and current.id or nil
+	end
+
+	M.notify_change()
+	return true
 end
 
 ---@param file_path string
