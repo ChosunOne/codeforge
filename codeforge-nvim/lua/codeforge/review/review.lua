@@ -542,6 +542,23 @@ function Review:prev_hunk()
 	end
 end
 
+---Record a hunk triage action into the undo history
+---@param self Review
+---@param p Placement
+---@param before table { status?, region? }
+---@param after table { status, region? }
+function Review:_record_triage(p, before, after)
+	local change = state.change_for_path(self.path)
+	require("codeforge.history").record({
+		kind = "hunk",
+		change_id = change and change.id or nil,
+		path = self.path,
+		hunk_id = p.hunk_id,
+		before = before,
+		after = after,
+	})
+end
+
 ---Reject the hunk covering buffer `row`: drop the AI change for that hunk's
 ---region so the buffer reflects `U` there. For a pure-add hunk this removes
 ---the added lines; a deletion fold is restored as real text. Marks the hunk
@@ -556,9 +573,14 @@ function Review:_reject_placement(p)
 	local adds = p.adds or {}
 	local first = p.fold and p.fold.anchor_row + 1 or adds[1]
 	local last = adds[#adds] or (p.fold and p.fold.anchor_row)
+	local hist_before = { status = self.hunk_status[p.hunk_id] }
+	if first then
+		hist_before.region = vim.api.nvim_buf_get_lines(self.buf, first, last + 1, false)
+	end
 	if not first then
 		self.hunk_status[p.hunk_id] = "rejected"
 		state.notify_change()
+		self:_record_triage(p, hist_before, { status = "rejected" })
 		return true
 	end
 
@@ -567,6 +589,7 @@ function Review:_reject_placement(p)
 	self.hunk_status[p.hunk_id] = "rejected"
 	self:render()
 	state.notify_change()
+	self:_record_triage(p, hist_before, { status = "rejected", region = replacement })
 	return true
 end
 
@@ -583,9 +606,14 @@ function Review:_accept_placement(p)
 		return false
 	end
 	local first, last = self:_region_rows(p)
+	local hist_before = { status = self.hunk_status[p.hunk_id] }
+	if first then
+		hist_before.region = vim.api.nvim_buf_get_lines(self.buf, first, last + 1, false)
+	end
 	if not first then
 		self.hunk_status[p.hunk_id] = "accepted"
 		state.notify_change()
+		self:_record_triage(p, hist_before, { status = "accepted" })
 		return true
 	end
 
@@ -596,12 +624,14 @@ function Review:_accept_placement(p)
 	if res.conflict then
 		self.hunk_status[p.hunk_id] = "conflicted"
 		state.notify_change()
+		self:_record_triage(p, hist_before, { status = "conflicted" })
 		return true
 	end
 	self:_apply_region(p, first, last, res.lines)
 	self.hunk_status[p.hunk_id] = "accepted"
 	self:render()
 	state.notify_change()
+	self:_record_triage(p, hist_before, { status = "accepted", region = res.lines })
 	return true
 end
 
@@ -862,6 +892,7 @@ function Review:confirm_resolve()
 	local p = self:_placement_for(r.hunk_id)
 	local lines = vim.api.nvim_buf_get_lines(r.resolve_buf, 0, -1, false)
 	self:_restore_review_window()
+	local hist_before = { status = "conflicted" }
 
 	if p then
 		local n = vim.api.nvim_buf_line_count(self.buf)
@@ -871,6 +902,7 @@ function Review:confirm_resolve()
 		for i = r.first + 1, m - tail do
 			region[#region + 1] = lines[i]
 		end
+		hist_before.region = vim.api.nvim_buf_get_lines(self.buf, r.first, r.last + 1, false)
 		self:_apply_region(p, r.first, r.last, region)
 		self.hunk_status[r.hunk_id] = "accepted"
 		if #region > 0 then
@@ -884,6 +916,7 @@ function Review:confirm_resolve()
 		end
 		self:render()
 		state.notify_change()
+		self:_record_triage(p, hist_before, { status = "accepted", region = region })
 		state.maybe_complete(state.change_for_path(self.path))
 	end
 

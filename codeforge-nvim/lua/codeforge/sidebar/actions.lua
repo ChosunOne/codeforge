@@ -13,9 +13,17 @@ function M.toggle_file(path)
 			if file.status == "modified" then
 				state.toggle_file(path)
 			else
+				local before = file.decision
 				file.decision = file.decision == "accepted" and "rejected" or "accepted"
 				state.notify_change()
 				state.maybe_complete(change)
+				require("codeforge.history").record({
+					kind = "decision",
+					change_id = change.id,
+					path = path,
+					before = { decision = before },
+					after = { decision = file.decision },
+				})
 			end
 			return
 		end

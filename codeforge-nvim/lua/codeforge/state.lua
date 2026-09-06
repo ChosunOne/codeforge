@@ -19,6 +19,7 @@ function M.reset()
 	M.log = {}
 	M.selected_path = nil
 	M.last_view_state = nil
+	require("codeforge.history").reset()
 end
 
 ---@alias Status
