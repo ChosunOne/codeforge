@@ -185,15 +185,18 @@ end
 ---@param hunk_id string
 ---@return string|nil status
 function M.hunk_outcome(path, hunk_id)
-	local live = child.lua_get(
-		string.format(
-			[=[((require("codeforge.state").get_review(%s) or {}).hunk_status or {})[%s]]=],
-			vim.inspect(path),
-			vim.inspect(hunk_id)
+	-- A live review is authoritative: nil there means pending, and must not
+	-- fall through to the log (a revived review has nil statuses).
+	local review_exists =
+		child.lua_get(string.format([[require("codeforge.state").get_review(%s) ~= nil]], vim.inspect(path)))
+	if review_exists then
+		return child.lua_get(
+			string.format(
+				[=[((require("codeforge.state").get_review(%s) or {}).hunk_status or {})[%s]]=],
+				vim.inspect(path),
+				vim.inspect(hunk_id)
+			)
 		)
-	)
-	if live ~= nil and live ~= vim.NIL then
-		return live
 	end
 	return child.lua_get(string.format(
 		[=[

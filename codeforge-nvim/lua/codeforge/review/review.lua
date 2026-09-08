@@ -1119,7 +1119,13 @@ function Review:open()
 	self:render()
 	self:setup_keymaps()
 	state.set_review(self.path, self)
+	self:_install_reconcile_watch()
+end
 
+---Install the TextChanged/TextChangedI reconcile watcher on the
+---review buffer.
+---@param self Review
+function Review:_install_reconcile_watch()
 	self._reconcile_autocmd = vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
 		buffer = self.buf,
 		callback = function()
@@ -1142,6 +1148,18 @@ function Review:open()
 			end, 120)
 		end,
 	})
+end
+
+---Re-register a review whose change was revived after completion
+---@param self Review
+function Review:revive()
+	if not self.buf or not vim.api.nvim_buf_is_valid(self.buf) then
+		return
+	end
+	state.set_review(self.path, self)
+	self:render()
+	self:setup_keymaps()
+	self:_install_reconcile_watch()
 end
 
 ---Reconcile pending-hunk signs with the live buffer after an edit: drop any sign

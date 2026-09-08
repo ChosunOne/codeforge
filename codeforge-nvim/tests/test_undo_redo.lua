@@ -357,4 +357,140 @@ T["sweep undo reverts atomic decisions it made"] = function()
 	)
 end
 
+T["undoing the completing action revives the change and review"] = function()
+	local O = { "a", "b", "c", "d", "e" }
+	local path = F.tmp_path()
+	child.fn.writefile(O, path)
+	child.cmd("edit " .. path)
+	F.seed_change(path, O, { F.replace_hunk("h1", 2, "b", "B"), F.replace_hunk("h2", 4, "d", "D") })
+
+	local buf = open_review(path)
+	child.lua(
+		string.format(
+			[[local r = require("codeforge.state").get_review(%s); r:accept_hunk(1); r:accept_hunk(3)]],
+			vim.inspect(path)
+		)
+	)
+	MiniTest.expect.equality(#child.lua_get([[require("codeforge.state").get_changes()]]), 0, {
+		fail_reason = "precondition: change auto-completed",
+	})
+
+	undo()
+
+	MiniTest.expect.equality(#child.lua_get([[require("codeforge.state").get_changes()]]), 1, {
+		fail_reason = "the change should be restored to tracking",
+	})
+	MiniTest.expect.equality(hunk_status(path, "h2"), vim.NIL, {
+		fail_reason = "the completing accept should be undone (h2 pending)",
+	})
+	MiniTest.expect.equality(hunk_status(path, "h1"), "accepted", {
+		fail_reason = "the earlier accept stays (it has its own undo record)",
+	})
+	Q.expect_lines("buffer back to pre-completing state", buf_lines(path), { "a", "B", "c", "D", "e" })
+	-- review revived: decorations + keymaps + handlers re-installed
+	MiniTest.expect.equality(F.has_keymap(buf, "<C-x>a"), true, {
+		fail_reason = "review keymaps should be re-installed on revival",
+	})
+	-- log: completion entry + reopened marker
+	local log = child.lua_get([[require("codeforge.state").log]])
+	MiniTest.expect.equality(#log, 2, { fail_reason = "completion + reopened entries, got " .. vim.inspect(log) })
+	MiniTest.expect.equality(log[2].status, "reopened", { fail_reason = "reopened marker appended" })
+end
+
+T["redo re-completes the revived change"] = function()
+	local O = { "a", "b", "c", "d", "e" }
+	local path = F.tmp_path()
+	child.fn.writefile(O, path)
+	child.cmd("edit " .. path)
+	F.seed_change(path, O, { F.replace_hunk("h1", 2, "b", "B"), F.replace_hunk("h2", 4, "d", "D") })
+
+	open_review(path)
+	child.lua(
+		string.format(
+			[[local r = require("codeforge.state").get_review(%s); r:accept_hunk(1); r:accept_hunk(3)]],
+			vim.inspect(path)
+		)
+	)
+	undo()
+	redo()
+
+	MiniTest.expect.equality(#child.lua_get([[require("codeforge.state").get_changes()]]), 0, {
+		fail_reason = "redo should re-complete the change",
+	})
+	MiniTest.expect.equality(
+		child.lua_get(string.format([[require("codeforge.state").get_review(%s) == nil]], vim.inspect(path))),
+		true,
+		{ fail_reason = "review torn down again on re-completion" }
+	)
+	local log = child.lua_get([[require("codeforge.state").log]])
+	MiniTest.expect.equality(#log, 3, {
+		fail_reason = "append-only log: completed, reopened, completed again",
+	})
+	MiniTest.expect.equality(log[3].status, "accepted", { fail_reason = "re-completion logs the outcome again" })
+end
+
+T["undoing deeper into a revived change keeps it tracked"] = function()
+	local O = { "a", "b", "c", "d", "e" }
+	local path = F.tmp_path()
+	child.fn.writefile(O, path)
+	child.cmd("edit " .. path)
+	F.seed_change(path, O, { F.replace_hunk("h1", 2, "b", "B"), F.replace_hunk("h2", 4, "d", "D") })
+
+	open_review(path)
+	child.lua(
+		string.format(
+			[[local r = require("codeforge.state").get_review(%s); r:accept_hunk(1); r:accept_hunk(3)]],
+			vim.inspect(path)
+		)
+	)
+	undo() -- revives the change (h2 pending, h1 accepted)
+	undo() -- undoes h1's accept too
+
+	MiniTest.expect.equality(#child.lua_get([[require("codeforge.state").get_changes()]]), 1, {
+		fail_reason = "the revived change must NOT instantly re-complete while undoing",
+	})
+	MiniTest.expect.equality(hunk_status(path, "h1"), vim.NIL, { fail_reason = "h1 pending" })
+	MiniTest.expect.equality(hunk_status(path, "h2"), vim.NIL, { fail_reason = "h2 pending" })
+end
+
+T["undo of a sweep that completed a change revives it fully"] = function()
+	local O = { "a", "b", "c", "d", "e" }
+	local path = F.tmp_path()
+	child.fn.writefile(O, path)
+	child.cmd("edit " .. path)
+	F.seed_change(path, O, { F.replace_hunk("h1", 2, "b", "B"), F.replace_hunk("h2", 4, "d", "D") })
+	local added = F.tmp_path()
+	child.fn.writefile({ "new" }, added)
+	child.lua(string.format(
+		[[
+                local state = require("codeforge.state")
+                table.insert(state.changes[1].files, { path = %s, status = "added", hunks = {} })
+        ]],
+		vim.inspect(added)
+	))
+
+	open_review(path)
+	child.lua_get([[require("codeforge.sidebar.actions").accept_pending()]])
+	MiniTest.expect.equality(#child.lua_get([[require("codeforge.state").get_changes()]]), 0, {
+		fail_reason = "precondition: sweep completed the change",
+	})
+
+	undo()
+
+	MiniTest.expect.equality(#child.lua_get([[require("codeforge.state").get_changes()]]), 1, {
+		fail_reason = "change revived",
+	})
+	MiniTest.expect.equality(
+		child.lua_get(string.format([[require("codeforge.state").get_review(%s) ~= nil]], vim.inspect(path))),
+		true,
+		{ fail_reason = "file review revived" }
+	)
+	MiniTest.expect.equality(hunk_status(path, "h2"), vim.NIL, { fail_reason = "h2 pending after undo" })
+	MiniTest.expect.equality(
+		child.lua_get([[require("codeforge.state").changes[1].files[2].decision]]),
+		vim.NIL,
+		{ fail_reason = "the sweep's atomic decision must revert too" }
+	)
+end
+
 return T

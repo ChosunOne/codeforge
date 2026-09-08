@@ -171,6 +171,16 @@ end
 local function apply_record(rec, direction)
 	local state = require("codeforge.state")
 	local target = direction == "undo" and rec.before or rec.after
+	local needs_revival = false
+	if rec.kind == "decision" then
+		needs_revival = state.change_for_path(rec.path) == nil
+	else
+		needs_revival = state.get_review(rec.path) == nil
+	end
+	if needs_revival and not state.revive_change(rec.change_id) then
+		return false
+	end
+
 	if rec.kind == "decision" then
 		for _, change in ipairs(state.get_changes()) do
 			if change.id == rec.change_id then

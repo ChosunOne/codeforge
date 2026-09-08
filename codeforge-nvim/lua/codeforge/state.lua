@@ -8,6 +8,7 @@ M.selected_path = nil
 M.last_view_state = nil
 M.reviews = {}
 M.log = {}
+M.completed = {}
 M._on_change = nil
 
 function M.reset()
@@ -17,6 +18,7 @@ function M.reset()
 	M.expanded_files = {}
 	M.reviews = {}
 	M.log = {}
+	M.completed = {}
 	M.selected_path = nil
 	M.last_view_state = nil
 	require("codeforge.history").reset()
@@ -286,13 +288,44 @@ function M.complete_change(change)
 	end
 
 	local entry = M.build_log_entry(change)
+	local reviews = {}
 	for _, file in ipairs(change.files or {}) do
 		local review = M.reviews[file.path]
 		if review then
+			reviews[file.path] = review
 			review:dismiss()
 		end
 	end
+	M.completed[change.id] = { change = change, reviews = reviews }
 	M.remove_change(change.id, entry)
+end
+
+---Revive a completed change by id
+---@param id string
+---@return boolean revived
+function M.revive_change(id)
+	local completed = M.completed[id]
+	if not completed then
+		return false
+	end
+	M.completed[id] = nil
+	local change = completed.change
+	table.insert(M.changes, change)
+	if M.current_change_index == nil then
+		M.current_change_index = #M.changes
+		M.current_change_id = change.id
+	end
+	for _, review in pairs(completed.reviews) do
+		review:revive()
+	end
+	M.append_log({
+		id = change.id,
+		title = change.title,
+		timestamp = os.time(),
+		status = "reopened",
+	})
+	M.notify_change()
+	return true
 end
 
 ---Watch for completion: when `change`'s derived status has left `pending`,
