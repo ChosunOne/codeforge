@@ -231,4 +231,159 @@ T["an external nvim client delivers a change over the socket"] = function()
 	})
 end
 
+-- ── shared socket option (agent-reachable delivery) ────────────────────
+
+local function socket_perm(path)
+	return child.lua_get([[ (function()
+                local st = vim.uv.fs_stat("]] .. path .. [[")
+                if st == nil then
+                        return vim.NIL
+                end
+                return string.format("%o", st.mode % 512)
+        end)() ]])
+end
+
+local function socket_gid(path)
+	return child.lua_get([[ (function()
+                local st = vim.uv.fs_stat("]] .. path .. [[")
+                if st == nil then
+                        return vim.NIL
+                end
+                return st.gid
+        end)() ]])
+end
+
+local function gid_in_child(group)
+	local code = "(function(g) "
+		.. 'for _, line in ipairs(vim.fn.readfile("/etc/group")) do '
+		.. 'local name, gid = line:match("^([^:]+):[^:]*:(%d+):") '
+		.. "if name == g then return tonumber(gid) end "
+		.. "end return vim.NIL end)("
+		.. vim.inspect(group)
+		.. ")"
+	return child.lua_get(code)
+end
+
+---A group name the child's user actually belongs to (first non-primary from
+---`id -Gn`, falling back to the primary) so chgrp succeeds in any environment.
+local function child_pick_group()
+	return child.lua_get([=[ (function()
+                local primary = vim.fn.system({ "id", "-gn" }):gsub("%s+$", "")
+                for name in vim.fn.system({ "id", "-Gn" }):gmatch("%S+") do
+                        if name ~= primary then
+                                return name
+                        end
+                end
+                return primary
+        end)() ]=])
+end
+
+T["table option with path, group and mode starts a shared socket"] = function()
+	local sock = F.tmp_path("_rpc.sock")
+	local group = child_pick_group()
+	child.lua(
+		string.format(
+			[[require("codeforge.transport").setup_socket({ path = %s, group = %s, mode = "660" })]],
+			vim.inspect(sock),
+			vim.inspect(group)
+		)
+	)
+	MiniTest.expect.equality(
+		child.lua_get(string.format([[vim.list_contains(vim.fn.serverlist(), %s)]], vim.inspect(sock))),
+		true,
+		{ fail_reason = "table option should start the socket" }
+	)
+	MiniTest.expect.equality(socket_perm(sock), "660", { fail_reason = "mode should be applied to the socket" })
+	MiniTest.expect.equality(socket_gid(sock), gid_in_child(group), {
+		fail_reason = "group should be applied to the socket (picked " .. tostring(group) .. ")",
+	})
+end
+
+T["table option with only a mode applies it and leaves the group alone"] = function()
+	local control = F.tmp_path("_ctl.sock")
+	local sock = F.tmp_path("_rpc.sock")
+	child.lua(
+		string.format(
+			[[require("codeforge.transport").setup_socket({ path = %s })
+                require("codeforge.transport").setup_socket({ path = %s, mode = "666" })]],
+			vim.inspect(control),
+			vim.inspect(sock)
+		)
+	)
+	MiniTest.expect.equality(socket_perm(sock), "666")
+	MiniTest.expect.equality(socket_gid(sock), socket_gid(control), {
+		fail_reason = "group must be untouched when not requested",
+	})
+end
+
+T["unknown group warns but the socket still starts with the mode applied"] = function()
+	local sock = F.tmp_path("_rpc.sock")
+	child.lua(
+		string.format(
+			[[require("codeforge.transport").setup_socket({ path = %s, group = "no-such-group-xyz", mode = "660" })]],
+			vim.inspect(sock)
+		)
+	)
+	MiniTest.expect.equality(
+		child.lua_get(string.format([[vim.list_contains(vim.fn.serverlist(), %s)]], vim.inspect(sock))),
+		true,
+		{ fail_reason = "a bad group must not prevent the socket from starting" }
+	)
+	MiniTest.expect.equality(socket_perm(sock), "660")
+end
+
+T["table option without a path starts nothing"] = function()
+	child.lua([[require("codeforge.transport").setup_socket({ group = "sim-admins", mode = "660" })]])
+	MiniTest.expect.equality(child.lua_get([[require("codeforge.transport").active_socket]]), vim.NIL, {
+		fail_reason = "no socket should be tracked without a path",
+	})
+end
+
+T["setup_socket(false) stops a table-started socket"] = function()
+	local sock = F.tmp_path("_rpc.sock")
+	child.lua(string.format(
+		[[require("codeforge.transport").setup_socket({ path = %s, mode = "660" })
+                require("codeforge.transport").setup_socket(false)]],
+		vim.inspect(sock)
+	))
+	MiniTest.expect.equality(
+		child.lua_get(string.format([[vim.list_contains(vim.fn.serverlist(), %s)]], vim.inspect(sock))),
+		false
+	)
+end
+
+T["default socket path is a named pipe on Windows"] = function()
+	child.lua([[require("codeforge.transport")._is_windows = function() return true end]])
+	local p = child.lua_get([[require("codeforge.transport").socket_path()]])
+	local prefix = "\\\\.\\pipe\\codeforge-" -- \\\\.\\pipe\\codeforge-*
+	MiniTest.expect.equality(p:sub(1, #prefix) == prefix, true, {
+		fail_reason = "expected a named pipe \\\\.\\pipe\\codeforge-*; got: " .. tostring(p),
+	})
+end
+
+T["socket sharing is skipped on Windows and the socket still starts"] = function()
+	local control = F.tmp_path("_ctl.sock")
+	local sock = F.tmp_path("_rpc.sock")
+	child.lua(
+		string.format(
+			[[require("codeforge.transport")._is_windows = function() return true end
+                require("codeforge.transport").setup_socket({ path = %s })
+                require("codeforge.transport").setup_socket({ path = %s, group = "agents", mode = "660" })]],
+			vim.inspect(control),
+			vim.inspect(sock)
+		)
+	)
+	MiniTest.expect.equality(
+		child.lua_get(string.format([[vim.list_contains(vim.fn.serverlist(), %s)]], vim.inspect(sock))),
+		true,
+		{ fail_reason = "the socket should still start on Windows" }
+	)
+	MiniTest.expect.equality(socket_gid(sock), socket_gid(control), {
+		fail_reason = "group must not be applied on Windows",
+	})
+	MiniTest.expect.equality(socket_perm(sock) ~= "660", true, {
+		fail_reason = "mode must not be applied on Windows",
+	})
+end
+
 return T

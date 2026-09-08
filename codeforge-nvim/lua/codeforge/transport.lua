@@ -275,17 +275,94 @@ function M.receive_file_strict(path)
 	return payload
 end
 
+---Checks if running on windows machine
+---@return boolean
+function M._is_windows()
+	return vim.fn.has("win32") == 1
+end
+
+---Platform appropriate default address for the RPC socket
+---@return string
+local function default_socket_path()
+	if M._is_windows() then
+		local user = vim.uv.os_getenv("USERNAME") or vim.uv.os_getenv("USER") or "default"
+		user = user:gsub("[^%w%-_]", "")
+		return "\\\\.\\pipe\\codeforge-" .. user .. ".sock"
+	end
+	local run = vim.fn.stdpath("run"):gsub("/+$", "")
+	return run .. "/codeforge.sock"
+end
+
 ---Address of the active RPC socket, or the default path when none is active.
 ---@return string
 function M.socket_path()
 	if type(M.active_socket) == "string" then
 		return M.active_socket
 	end
-	return vim.fn.stdpath("run") .. "/codeforge.sock"
+	return default_socket_path()
+end
+
+---Resolve a group name to its gid via /etc/group
+---@param name string
+---@return number|nil gid
+local function gid_for_group(name)
+	local ok, lines = pcall(vim.fn.readfile, "/etc/group")
+	if not ok then
+		return nil
+	end
+	for _, line in ipairs(lines) do
+		local gname, gid = line:match("^([^:]+):[^:]*:(%d+):")
+		if gname == name then
+			return tonumber(gid)
+		end
+	end
+	return nil
+end
+
+---@param path string
+---@param opt table with optional `group` and `mode`
+local function share_socket(path, opt)
+	if M._is_windows() then
+		if opt.group ~= nil or opt.mode ~= nil then
+			vim.notify(
+				"codeforge: socket group/mode sharing is not supported on Windows named pipes",
+				vim.log.levels.WARN
+			)
+		end
+		return
+	end
+	if opt.group ~= nil then
+		local gid = gid_for_group(opt.group)
+		if gid == nil then
+			vim.notify(("codeforge: socket group %q not found"):format(tostring(opt.group)), vim.log.levels.WARN)
+		else
+			local ok2, err = pcall(vim.uv.fs_chown, path, -1, gid)
+			if not ok2 then
+				vim.notify(
+					("codeforge: could not set socket group to %q: %s"):format(tostring(opt.group), tostring(err)),
+					vim.log.levels.WARN
+				)
+			end
+		end
+	end
+	if opt.mode ~= nil then
+		local mode = tonumber(opt.mode, 8)
+		if not mode then
+			vim.notify(("codeforge: socket mode %q is not octal"):format(tostring(opt.mode)), vim.log.levels.WARN)
+		else
+			local ok3, err = pcall(vim.uv.fs_chmod, path, mode)
+			if not ok3 then
+				vim.notify(
+					("codeforge: could not set socket mode to %s: %s"):format(tostring(opt.mode), tostring(err)),
+					vim.log.levels.WARN
+				)
+			end
+		end
+	end
 end
 
 ---Start or stop the RPC socket to receive change-sets through
----@param opt boolean|string|nil
+---@param opt boolean|string|table|nil
 function M.setup_socket(opt)
 	if opt == false then
 		if M.active_socket then
@@ -294,18 +371,32 @@ function M.setup_socket(opt)
 		M.active_socket = nil
 		return
 	end
-	local path = type(opt) == "string" and opt or (vim.fn.stdpath("run") .. "/codeforge.sock")
+	local path
+	if type(opt) == "table" then
+		if type(opt.path) ~= "string" or #opt.path == 0 then
+			vim.notify("codeforge: socket table option needs a non-empty string path", vim.log.levels.WARN)
+			return
+		end
+		path = opt.path
+	else
+		path = type(opt) == "string" and opt or default_socket_path()
+	end
 	if M.active_socket == path and vim.list_contains(vim.fn.serverlist(), path) then
 		return
 	end
-	local ok, addr = pcall(vim.fn.serverstart, path)
-	if ok and addr ~= "" then
-		M.active_socket = path
-	else
-		vim.notify(
-			("codeforge: could not start RPC socket at %s (%s)"):format(path, tostring(addr)),
-			vim.log.levels.WARN
-		)
+	if not vim.list_contains(vim.fn.serverlist(), path) then
+		local ok, addr = pcall(vim.fn.serverstart, path)
+		if not (ok and addr ~= "") then
+			vim.notify(
+				("codeforge: could not start RPC socket at %s (%s)"):format(path, tostring(addr)),
+				vim.log.levels.WARN
+			)
+			return
+		end
+	end
+	M.active_socket = path
+	if type(opt) == "table" then
+		share_socket(path, opt)
 	end
 end
 
