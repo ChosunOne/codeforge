@@ -19,4 +19,4 @@ vim.o.runtimepath = vim.o.runtimepath
 	.. nio_path
 
 require("mini.test").setup()
-require("codeforge").setup()
+require("codeforge").setup({ socket = false })

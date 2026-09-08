@@ -32,6 +32,7 @@ function M.setup(opts)
 	M.config = vim.tbl_extend("force", M.config, opts)
 	M.state = require("codeforge.state")
 	M.state.log_file = vim.fn.stdpath("data") .. "/codeforge/log.json"
+	require("codeforge.transport").setup_socket(M.config.socket)
 
 	local dapui = require("dapui")
 	dapui.setup({
