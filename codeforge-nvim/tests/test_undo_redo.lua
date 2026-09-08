@@ -224,4 +224,137 @@ T["undo/redo keybinds work from the review buffer"] = function()
 	})
 end
 
+T["regression: undo/redo across a resolve keeps pending anchors in range"] = function()
+	-- used to crash next_hunk with "Invalid cursor line: out of range": the
+	-- undo/redo restore left a stale fold_mark whose extmark got clamped to
+	-- the buffer end by the whole-buffer rewrite, so render() re-anchored a
+	-- pending delete hunk's fold at the last line.
+	dofile("tests/interactive.lua")
+	local path = "src/net/service.lua"
+	local state = require("codeforge.state")
+	require("codeforge.review.buffer").open(path)
+	local review = state.get_review(path)
+	local buf = review.buf
+
+	local row = review:hunk_row("hunk-default-host")
+	review:resolve_hunk(row - 1)
+	review:_take_ours()
+	review:confirm_resolve()
+
+	local actions = require("codeforge.sidebar.actions")
+	MiniTest.expect.equality(actions.undo(), 1, { fail_reason = "undo the resolve" })
+	MiniTest.expect.equality(actions.redo(), 1, { fail_reason = "redo the resolve" })
+
+	-- every pending hunk's anchor must be a valid 0-indexed row
+	local count = vim.api.nvim_buf_line_count(buf)
+	for _, p in ipairs(review:pending_hunks()) do
+		local a = review:_hunk_anchor(p)
+		MiniTest.expect.equality(a ~= nil and a < count, true, {
+			fail_reason = "pending hunk " .. p.hunk_id .. " anchor out of range: " .. tostring(a) .. " of " .. count,
+		})
+	end
+
+	local ok, err = pcall(function()
+		review:next_hunk()
+	end)
+	MiniTest.expect.equality(
+		ok,
+		true,
+		{ fail_reason = "next_hunk must not error after undo/redo, got " .. tostring(err) }
+	)
+end
+
+T["a sweep is one undo unit (all hunks revert together)"] = function()
+	local O = { "a", "b", "c", "d", "e" }
+	local path = F.tmp_path()
+	child.fn.writefile(O, path)
+	child.cmd("edit " .. path)
+	local h1 = F.replace_hunk("h1", 2, "b", "B")
+	local h2 = F.replace_hunk("h2", 4, "d", "D")
+	local h3 = F.replace_hunk("h3", 5, "e", "E")
+	F.seed_change(path, O, { h1, h2, h3 })
+
+	open_review(path)
+	-- keep h3 conflicted so the change stays tracked after the sweep
+	-- (a fully-triaged change auto-completes; revival is a later increment)
+	child.lua(
+		string.format([[require("codeforge.state").get_review(%s).hunk_status.h3 = "conflicted"]], vim.inspect(path))
+	)
+
+	child.lua(string.format([[require("codeforge.state").get_review(%s):accept_pending()]], vim.inspect(path)))
+	Q.expect_lines("after sweep", buf_lines(path), { "a", "B", "c", "D", "E" })
+
+	local applied = undo()
+	MiniTest.expect.equality(applied, 2, { fail_reason = "both swept hunks should undo as one unit" })
+	MiniTest.expect.equality(hunk_status(path, "h1"), vim.NIL, { fail_reason = "h1 pending after undo" })
+	MiniTest.expect.equality(hunk_status(path, "h2"), vim.NIL, { fail_reason = "h2 pending after undo" })
+	Q.expect_lines("after undo", buf_lines(path), { "a", "B", "c", "D", "E" })
+
+	local applied_redo = redo()
+	MiniTest.expect.equality(applied_redo, 2, { fail_reason = "redo re-applies both hunks" })
+	MiniTest.expect.equality(hunk_status(path, "h1"), "accepted", { fail_reason = "h1 accepted after redo" })
+	MiniTest.expect.equality(hunk_status(path, "h2"), "accepted", { fail_reason = "h2 accepted after redo" })
+end
+
+T["sweep undo reverts atomic decisions it made"] = function()
+	local added = F.tmp_path()
+	child.fn.writefile({ "new" }, added)
+	local O = { "a1", "a2" }
+	local pa = F.tmp_path()
+	child.fn.writefile(O, pa)
+	local pc = F.tmp_path()
+	child.fn.writefile({ "c1", "c2" }, pc)
+	child.lua(
+		string.format(
+			[[
+                local state = require("codeforge.state")
+                state.reset()
+                state.changes = { {
+                        id = "change-001",
+                        title = "T",
+                        files = {
+                                { path = %s, status = "added", hunks = {} },
+                                { path = %s, status = "modified", base = %s, hunks = { %s } },
+                                { path = %s, status = "modified", base = { "c1", "c2" }, hunks = { %s } },
+                        },
+                } }
+                state.current_change_index = 1
+                state.current_change_id = "change-001"
+                -- pre-open a review for pa and mark its hunk conflicted so the sweep
+                -- leaves it (and the change) pending
+        ]],
+			vim.inspect(added),
+			vim.inspect(pa),
+			vim.inspect(O),
+			vim.inspect(F.replace_hunk("a-h1", 2, "a2", "A2")),
+			vim.inspect(pc),
+			vim.inspect(F.replace_hunk("c-h1", 1, "c1", "C1"))
+		)
+	)
+	open_review(pa)
+	child.lua(
+		string.format([[require("codeforge.state").get_review(%s).hunk_status["a-h1"] = "conflicted"]], vim.inspect(pa))
+	)
+
+	child.lua_get([[require("codeforge.sidebar.actions").accept_pending()]])
+	MiniTest.expect.equality(
+		child.lua_get([[require("codeforge.state").changes[1].files[1].decision]]),
+		"accepted",
+		{ fail_reason = "precondition: sweep decided the added file" }
+	)
+
+	undo()
+
+	MiniTest.expect.equality(
+		child.lua_get([[require("codeforge.state").changes[1].files[1].decision]]),
+		vim.NIL,
+		{ fail_reason = "sweep undo must revert the atomic decision it made" }
+	)
+	MiniTest.expect.equality(
+		child.lua_get([[require("codeforge.state").changes[1].files[1].status]]),
+		"added",
+		{ fail_reason = "sanity: file still tracked" }
+	)
+end
+
 return T

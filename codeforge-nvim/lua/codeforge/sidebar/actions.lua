@@ -97,15 +97,26 @@ local function sweep_pending(verb)
 		return 0
 	end
 
+	local hist = require("codeforge.history")
+	hist.begin(verb == "accept" and "accept_pending" or "reject_pending")
+
 	local buffer = require("codeforge.review.buffer")
 	local total = 0
 	local decided_atomic = false
 	for _, file in ipairs(change.files or {}) do
 		if file.status == "added" or file.status == "deleted" then
 			if file.decision == nil then
+				local before = file.decision
 				file.decision = verb == "accept" and "accepted" or "rejected"
 				decided_atomic = true
 				total = total + 1
+				hist.record({
+					kind = "decision",
+					change_id = change.id,
+					path = file.path,
+					before = { decision = before },
+					after = { decision = file.decision },
+				})
 			end
 		elseif file.status == "modified" and #(file.hunks or {}) > 0 then
 			local review = state.get_review(file.path) or buffer.ensure_review(file.path)
@@ -118,6 +129,7 @@ local function sweep_pending(verb)
 			end
 		end
 	end
+	hist.commit()
 	if decided_atomic then
 		state.notify_change()
 	end

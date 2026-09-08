@@ -71,7 +71,7 @@ T["rejecting a hunk records the region content swap"] = function()
 	})
 end
 
-T["a sweep records one record per swept hunk"] = function()
+T["a sweep records one record per swept hunk in one transaction"] = function()
 	local O = { "a", "b", "c", "d", "e" }
 	local path = F.tmp_path()
 	child.fn.writefile(O, path)
@@ -81,11 +81,12 @@ T["a sweep records one record per swept hunk"] = function()
 	child.lua(string.format([[require("codeforge.state").get_review(%s):accept_pending()]], vim.inspect(path)))
 
 	local stack = undo_stack()
-	MiniTest.expect.equality(#stack, 2, {
-		fail_reason = "two implicit transactions (grouping comes later), got " .. vim.inspect(#stack),
+	MiniTest.expect.equality(#stack, 1, {
+		fail_reason = "the sweep is one transaction, got " .. vim.inspect(#stack),
 	})
+	MiniTest.expect.equality(#stack[1].records, 2, { fail_reason = "one record per swept hunk" })
 	MiniTest.expect.equality(stack[1].records[1].hunk_id, "h1", { fail_reason = "first record h1" })
-	MiniTest.expect.equality(stack[2].records[1].hunk_id, "h2", { fail_reason = "second record h2" })
+	MiniTest.expect.equality(stack[1].records[2].hunk_id, "h2", { fail_reason = "second record h2" })
 end
 
 T["an atomic decision flip records a decision action"] = function()

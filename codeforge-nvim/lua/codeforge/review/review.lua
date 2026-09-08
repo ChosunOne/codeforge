@@ -584,6 +584,7 @@ function Review:apply_history_state(hunk_id, status, buffer_lines, placements)
 			p.region_len = snap.region_len
 			p.region_row = snap.region_row
 			p.region_mark = snap.region_len and true or nil
+			p.fold_mark = nil
 			p.sign_marks = {}
 		end
 	end
@@ -722,14 +723,20 @@ end
 ---@param self Review
 ---@return integer count
 function Review:accept_pending()
-	return self:_sweep(self._accept_placement, false)
+	require("codeforge.history").begin("accept_pending")
+	local n = self:_sweep(self._accept_placement, false)
+	require("codeforge.history").commit()
+	return n
 end
 
 ---Reject every pending hunk in this review.
 ---@param self Review
 ---@return integer count
 function Review:reject_pending()
-	return self:_sweep(self._reject_placement, true)
+	require("codeforge.history").begin("reject_pending")
+	local n = self:_sweep(self._reject_placement, true)
+	require("codeforge.history").commit()
+	return n
 end
 
 ---Enter single-buffer conflict resolution for the conflicted hunk covering `row`.
