@@ -90,8 +90,10 @@ return function(user_config)
 			local node = row_nodes[vim.fn.line(".")]
 			if node and node.kind == "file" then
 				actions.toggle_file(node.path)
+			elseif node and node.kind == "completed" then
+				actions.reopen_completed(node.id)
 			end
-		end, "Toggle file expansion")
+		end, "Toggle file / reopen completed")
 		map(km.open_file, function()
 			local node = row_nodes[vim.fn.line(".")]
 			if not node then
@@ -198,6 +200,25 @@ return function(user_config)
 			track({ kind = "blank" })
 			canvas:write("No pending changes\n")
 			track({ kind = "blank" })
+		end
+
+		if #state.completed_order > 0 then
+			canvas:write("\n")
+			track({ kind = "blank" })
+			canvas:write("Completed (" .. #state.completed_order .. ")\n")
+			track({ kind = "header" })
+			for _, cid in ipairs(state.completed_order) do
+				local completed = state.completed[cid]
+				if completed then
+					local entry = completed.entry or {}
+					local outcome = entry.status or "?"
+					local glyph, glyph_hl = change_status_glyph(outcome)
+					canvas:write(glyph .. " ", { group = glyph_hl })
+					canvas:write(completed.change.title .. " ")
+					canvas:write("[" .. outcome:upper() .. "]\n")
+					track({ kind = "completed", id = cid })
+				end
+			end
 		end
 
 		row_nodes = rows

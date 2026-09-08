@@ -78,4 +78,30 @@ function M.pop_redo()
 	return tx
 end
 
+---Drop every transaction containing records for `change_id`.
+---@param change_id string
+function M.purge_change(change_id)
+	local function keep(tx)
+		for _, rec in ipairs(tx.records) do
+			if rec.change_id == change_id then
+				return false
+			end
+		end
+		return true
+	end
+
+	local function filter(stack)
+		local out = {}
+		for _, tx in ipairs(stack) do
+			if keep(tx) then
+				out[#out + 1] = tx
+			end
+		end
+		return out
+	end
+
+	M.undo_stack = filter(M.undo_stack)
+	M.redo_stack = filter(M.redo_stack)
+end
+
 return M

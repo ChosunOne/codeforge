@@ -9,6 +9,7 @@ M.last_view_state = nil
 M.reviews = {}
 M.log = {}
 M.completed = {}
+M.completed_order = {}
 M._on_change = nil
 
 function M.reset()
@@ -19,6 +20,7 @@ function M.reset()
 	M.reviews = {}
 	M.log = {}
 	M.completed = {}
+	M.completed_order = {}
 	M.selected_path = nil
 	M.last_view_state = nil
 	require("codeforge.history").reset()
@@ -296,7 +298,8 @@ function M.complete_change(change)
 			review:dismiss()
 		end
 	end
-	M.completed[change.id] = { change = change, reviews = reviews }
+	M.completed[change.id] = { change = change, reviews = reviews, entry = entry }
+	M.completed_order[#M.completed_order + 1] = change.id
 	M.remove_change(change.id, entry)
 end
 
@@ -309,6 +312,12 @@ function M.revive_change(id)
 		return false
 	end
 	M.completed[id] = nil
+	for i, cid in ipairs(M.completed_order) do
+		if cid == id then
+			table.remove(M.completed_order, i)
+			break
+		end
+	end
 	local change = completed.change
 	table.insert(M.changes, change)
 	if M.current_change_index == nil then
@@ -318,6 +327,39 @@ function M.revive_change(id)
 	for _, review in pairs(completed.reviews) do
 		review:revive()
 	end
+	M.append_log({
+		id = change.id,
+		title = change.title,
+		timestamp = os.time(),
+		status = "reopened",
+	})
+	M.notify_change()
+	return true
+end
+
+---Reopen a completed change as a fresh review round.
+---@param id string
+---@return boolean reopened
+function M.reopen_change(id)
+	local completed = M.completed[id]
+	if not completed then
+		return false
+	end
+	M.completed[id] = nil
+	for i, cid in ipairs(M.completed_order) do
+		if cid == id then
+			table.remove(M.completed_order, i)
+			break
+		end
+	end
+	local change = completed.change
+	for _, file in ipairs(change.files or {}) do
+		file.decision = nil
+	end
+	table.insert(M.changes, change)
+	M.current_change_index = #M.changes
+	M.current_change_id = change.id
+	require("codeforge.history").purge_change(id)
 	M.append_log({
 		id = change.id,
 		title = change.title,

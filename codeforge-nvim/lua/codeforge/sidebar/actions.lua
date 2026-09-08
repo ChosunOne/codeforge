@@ -209,6 +209,26 @@ local function apply_record(rec, direction)
 	return true
 end
 
+---Reopen a completed change as a fresh review round and show its first reviewable file.
+---@param id string
+---@return boolean reopened
+function M.reopen_completed(id)
+	local state = require("codeforge.state")
+	if not state.reopen_change(id) then
+		return false
+	end
+	local change = state.get_current_change()
+	if change then
+		for _, file in ipairs(change.files or {}) do
+			if file.status == "modified" and #(file.hunks or {}) > 0 then
+				require("codeforge.review.buffer").open(file.path)
+				break
+			end
+		end
+	end
+	return true
+end
+
 ---Undo the newest triage transaction
 ---@return integer applied number of records applied
 function M.undo()
