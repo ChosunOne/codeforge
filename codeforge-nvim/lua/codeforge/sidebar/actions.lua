@@ -152,4 +152,77 @@ function M.reject_pending()
 	return sweep_pending("reject")
 end
 
+---Apply one history record in a direction. Returns true when applied
+---@param rec table
+---@param direction "undo"|"redo"
+---@return boolean applied
+local function apply_record(rec, direction)
+	local state = require("codeforge.state")
+	local target = direction == "undo" and rec.before or rec.after
+	if rec.kind == "decision" then
+		for _, change in ipairs(state.get_changes()) do
+			if change.id == rec.change_id then
+				for _, file in ipairs(change.files or {}) do
+					if file.path == rec.path then
+						file.decision = target.decision
+						state.notify_change()
+						state.maybe_complete(change)
+						return true
+					end
+				end
+			end
+		end
+		return false
+	end
+
+	local review = state.get_review(rec.path)
+	if not review then
+		return false
+	end
+	review:apply_history_state(rec.hunk_id, target.status, target.buffer, target.placements)
+	state.notify_change()
+	if direction == "redo" then
+		state.maybe_complete(state.change_for_path(rec.path))
+	end
+	return true
+end
+
+---Undo the newest triage transaction
+---@return integer applied number of records applied
+function M.undo()
+	local hist = require("codeforge.history")
+	local tx = hist.pop_undo()
+	if not tx then
+		return 0
+	end
+	local state = require("codeforge.state")
+	local applied = 0
+	for i = #tx.records, 1, -1 do
+		if apply_record(tx.records[i], "undo") then
+			applied = applied + 1
+		end
+	end
+	state.notify_change()
+	return applied
+end
+
+---Redo the newest undone transaction
+---@return integer applied number of records applied
+function M.redo()
+	local hist = require("codeforge.history")
+	local tx = hist.pop_redo()
+	if not tx then
+		return 0
+	end
+	local state = require("codeforge.state")
+	local applied = 0
+	for _, rec in ipairs(tx.records) do
+		if apply_record(rec, "redo") then
+			applied = applied + 1
+		end
+	end
+	state.notify_change()
+	return applied
+end
+
 return M

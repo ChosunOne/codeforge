@@ -50,4 +50,25 @@ function M.record(rec)
 	M.commit()
 end
 
+---Pop the newest transaction onto the redo stack and return it.
+---@return table|nil transaction
+function M.pop_undo()
+	local tx = table.remove(M.undo_stack)
+	if tx then
+		M.redo_stack[#M.redo_stack + 1] = tx
+	end
+	return tx
+end
+
+---Pop the newest redo transaction back onto the undo stack and return it.
+---@return table|nil transaction
+
+function M.pop_redo()
+	local tx = table.remove(M.redo_stack)
+	if tx then
+		M.undo_stack[#M.undo_stack + 1] = tx
+	end
+	return tx
+end
+
 return M

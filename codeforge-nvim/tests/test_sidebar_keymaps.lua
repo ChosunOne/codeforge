@@ -130,8 +130,16 @@ T["sidebar buffer-local normal-mode maps are exactly our configured keys"] = fun
 	for _, m in ipairs(maps) do
 		lhs[m.lhs] = true
 	end
-	local expected =
-		{ ["<CR>"] = true, ["<C-[>"] = true, ["<C-]>"] = true, ["<C-X>A"] = true, ["<C-X>J"] = true, ["o"] = true }
+	local expected = {
+		["<CR>"] = true,
+		["<C-[>"] = true,
+		["<C-]>"] = true,
+		["<C-X>A"] = true,
+		["<C-X>J"] = true,
+		["<C-X>u"] = true,
+		["<C-X>R"] = true,
+		["o"] = true,
+	}
 	local missing, extra = {}, {}
 	for k in pairs(expected) do
 		if not lhs[k] then

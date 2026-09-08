@@ -323,7 +323,7 @@ end
 ---@param id integer?
 ---@return integer? row 0-indexed
 function Review:_row_of(id)
-	if not id then
+	if type(id) ~= "number" then
 		return nil
 	end
 	local pos = vim.api.nvim_buf_get_extmark_by_id(self.buf, diff.namespace, id, {})
@@ -542,13 +542,67 @@ function Review:prev_hunk()
 	end
 end
 
+---Snapshot the data of every placement, keyed by hunk id.
+---@param self Review
+---@return table hunk_id -> snapshot
+function Review:_snapshot_placements()
+	local out = {}
+	for _, p in ipairs(self.placements) do
+		out[p.hunk_id] = {
+			adds = p.adds and vim.deepcopy(p.adds) or nil,
+			kinds = p.kinds and vim.deepcopy(p.kinds) or nil,
+			add_contents = p.add_contents and vim.deepcopy(p.add_contents) or nil,
+			fold = p.fold and vim.deepcopy(p.fold) or nil,
+			region_len = p.region_len,
+			region_row = p.region_row,
+		}
+	end
+	return out
+end
+
+---Restore a historical state.
+---@param self Review
+---@param hunk_id string
+---@param status string? nil = pending
+---@param buffer_lines string[]
+---@param placements table hunk_id -> snapshot
+function Review:apply_history_state(hunk_id, status, buffer_lines, placements)
+	vim.api.nvim_buf_set_lines(self.buf, 0, -1, false, buffer_lines)
+	self._machine_tick = vim.api.nvim_buf_get_changedtick(self.buf)
+	if status == nil then
+		self.hunk_status[hunk_id] = nil
+	else
+		self.hunk_status[hunk_id] = status
+	end
+	for _, p in ipairs(self.placements) do
+		local snap = placements and placements[p.hunk_id] or nil
+		if snap then
+			p.adds = snap.adds
+			p.kinds = snap.kinds
+			p.add_contents = snap.add_contents
+			p.fold = snap.fold
+			p.region_len = snap.region_len
+			p.region_row = snap.region_row
+			p.region_mark = snap.region_len and true or nil
+			p.sign_marks = {}
+		end
+	end
+	self:render()
+end
+
 ---Record a hunk triage action into the undo history
 ---@param self Review
 ---@param p Placement
 ---@param before table { status?, region? }
+---@param buffer_before string[]
+---@param placements_before table
 ---@param after table { status, region? }
-function Review:_record_triage(p, before, after)
+function Review:_record_triage(p, before, buffer_before, placements_before, after)
 	local change = state.change_for_path(self.path)
+	after.buffer = vim.api.nvim_buf_get_lines(self.buf, 0, -1, false)
+	after.placements = self:_snapshot_placements()
+	before.buffer = buffer_before
+	before.placements = placements_before
 	require("codeforge.history").record({
 		kind = "hunk",
 		change_id = change and change.id or nil,
@@ -574,13 +628,15 @@ function Review:_reject_placement(p)
 	local first = p.fold and p.fold.anchor_row + 1 or adds[1]
 	local last = adds[#adds] or (p.fold and p.fold.anchor_row)
 	local hist_before = { status = self.hunk_status[p.hunk_id] }
+	local buffer_before = vim.api.nvim_buf_get_lines(self.buf, 0, -1, false)
+	local placements_before = self:_snapshot_placements()
 	if first then
 		hist_before.region = vim.api.nvim_buf_get_lines(self.buf, first, last + 1, false)
 	end
 	if not first then
 		self.hunk_status[p.hunk_id] = "rejected"
 		state.notify_change()
-		self:_record_triage(p, hist_before, { status = "rejected" })
+		self:_record_triage(p, hist_before, buffer_before, placements_before, { status = "rejected" })
 		return true
 	end
 
@@ -589,7 +645,7 @@ function Review:_reject_placement(p)
 	self.hunk_status[p.hunk_id] = "rejected"
 	self:render()
 	state.notify_change()
-	self:_record_triage(p, hist_before, { status = "rejected", region = replacement })
+	self:_record_triage(p, hist_before, buffer_before, placements_before, { status = "rejected", region = replacement })
 	return true
 end
 
@@ -607,13 +663,15 @@ function Review:_accept_placement(p)
 	end
 	local first, last = self:_region_rows(p)
 	local hist_before = { status = self.hunk_status[p.hunk_id] }
+	local buffer_before = vim.api.nvim_buf_get_lines(self.buf, 0, -1, false)
+	local placements_before = self:_snapshot_placements()
 	if first then
 		hist_before.region = vim.api.nvim_buf_get_lines(self.buf, first, last + 1, false)
 	end
 	if not first then
 		self.hunk_status[p.hunk_id] = "accepted"
 		state.notify_change()
-		self:_record_triage(p, hist_before, { status = "accepted" })
+		self:_record_triage(p, hist_before, buffer_before, placements_before, { status = "accepted" })
 		return true
 	end
 
@@ -624,14 +682,14 @@ function Review:_accept_placement(p)
 	if res.conflict then
 		self.hunk_status[p.hunk_id] = "conflicted"
 		state.notify_change()
-		self:_record_triage(p, hist_before, { status = "conflicted" })
+		self:_record_triage(p, hist_before, buffer_before, placements_before, { status = "conflicted" })
 		return true
 	end
 	self:_apply_region(p, first, last, res.lines)
 	self.hunk_status[p.hunk_id] = "accepted"
 	self:render()
 	state.notify_change()
-	self:_record_triage(p, hist_before, { status = "accepted", region = res.lines })
+	self:_record_triage(p, hist_before, buffer_before, placements_before, { status = "accepted", region = res.lines })
 	return true
 end
 
@@ -893,6 +951,8 @@ function Review:confirm_resolve()
 	local lines = vim.api.nvim_buf_get_lines(r.resolve_buf, 0, -1, false)
 	self:_restore_review_window()
 	local hist_before = { status = "conflicted" }
+	local buffer_before = vim.api.nvim_buf_get_lines(self.buf, 0, -1, false)
+	local placements_before = self:_snapshot_placements()
 
 	if p then
 		local n = vim.api.nvim_buf_line_count(self.buf)
@@ -916,7 +976,7 @@ function Review:confirm_resolve()
 		end
 		self:render()
 		state.notify_change()
-		self:_record_triage(p, hist_before, { status = "accepted", region = region })
+		self:_record_triage(p, hist_before, buffer_before, placements_before, { status = "accepted", region = region })
 		state.maybe_complete(state.change_for_path(self.path))
 	end
 
@@ -1025,6 +1085,12 @@ function Review:setup_keymaps()
 	map(cfg.dismiss, function()
 		self:dismiss()
 	end, "CodeForge: dismiss review")
+	map(cfg.undo, function()
+		require("codeforge.sidebar.actions").undo()
+	end, "CodeForge: undo review action")
+	map(cfg.redo, function()
+		require("codeforge.sidebar.actions").redo()
+	end, "CodeForge: redo review action")
 	map(cfg.next_hunk, function()
 		self:next_hunk()
 	end, "CodeForge: next hunk")
@@ -1136,6 +1202,8 @@ function Review:_teardown_keymaps()
 		cfg.accept_hunk,
 		cfg.resolve_hunk,
 		cfg.dismiss,
+		cfg.undo,
+		cfg.redo,
 		cfg.next_hunk,
 		cfg.prev_hunk,
 	}) do

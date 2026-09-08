@@ -113,6 +113,12 @@ return function(user_config)
 				end
 			end
 		end, "Open review buffer / jump to hunk")
+		map(km.undo, function()
+			actions.undo()
+		end, "Undo review action")
+		map(km.redo, function()
+			actions.redo()
+		end, "Redo review action")
 		map(km.accept_pending, function()
 			actions.accept_pending()
 		end, "Accept all pending hunks in change")
