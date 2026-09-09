@@ -20,6 +20,51 @@ local function find_file(path)
 	return nil
 end
 
+---Take over saving for a review buffer with `buftype=acwrite`
+---@param buf integer
+---@param path string
+local function attach_save_guard(buf, path)
+	vim.api.nvim_create_augroup("codeforge_save_guard", { clear = false })
+	local ok, existing = pcall(vim.api.nvim_get_autocmds, {
+		event = "BufWriteCmd",
+		group = "codeforge_save_guard",
+		buffer = buf,
+	})
+	if ok then
+		for _, ac in ipairs(existing) do
+			vim.api.nvim_del_autocmd(ac.id)
+		end
+	end
+	local snapshot
+	if vim.fn.filereadable(path) == 1 then
+		snapshot = vim.fn.readfile(path)
+	end
+	vim.api.nvim_create_autocmd("BufWriteCmd", {
+		group = "codeforge_save_guard",
+		buffer = buf,
+		callback = function(args)
+			local name = vim.api.nvim_buf_get_name(args.buf)
+			local lines = vim.api.nvim_buf_get_lines(args.buf, 0, -1, false)
+			local disk = vim.fn.filereadable(name) == 1 and vim.fn.readfile(name) or nil
+			local disk_untouched = disk == nil or (snapshot ~= nil and vim.deep_equal(disk, snapshot))
+			if not disk_untouched and not vim.deep_equal(disk, lines) then
+				error("CodeForge: the file changed on disk since the review opened (use :e to inspect)", 0)
+			end
+			-- acwrite buffers are never written by vim's default path; do it
+			-- ourselves: drop to a normal buftype so `write!` uses the standard
+			-- machinery (eol/fileformat handling), with forceit skipping the
+			-- changed-file check and noautocmd preventing recursion into this
+			-- handler.
+			vim.bo[args.buf].buftype = ""
+			local ok, err = pcall(vim.cmd, "silent! noautocmd write!")
+			vim.bo[args.buf].buftype = "acwrite"
+			if not ok then
+				error(tostring(err), 0)
+			end
+		end,
+	})
+end
+
 ---Find an already-loaded buffer for `path`, or nil.
 ---@param path string
 ---@return integer|nil bufnr
@@ -107,32 +152,21 @@ function M.ensure_review(path)
 		return nil
 	end
 
-	local buf = find_loaded_buf(path)
-	if not buf then
-		buf = vim.api.nvim_create_buf(false, true)
-		local ok = pcall(vim.api.nvim_buf_set_name, buf, path)
-		if not ok then
-			local abs = vim.fn.fnamemodify(path, ":p")
-			for _, b in ipairs(vim.api.nvim_list_bufs()) do
-				if vim.fn.fnamemodify(vim.api.nvim_buf_get_name(b), ":p") == abs then
-					buf = b
-					break
-				end
-			end
-		end
-		if vim.fn.filereadable(path) == 1 then
-			vim.api.nvim_buf_set_lines(buf, 0, -1, false, vim.fn.readfile(path))
-		end
-		vim.bo[buf].buftype = ""
-		vim.bo[buf].swapfile = false
+	buf = vim.fn.bufadd(path)
+	vim.bo[buf].buftype = "acwrite"
+	vim.bo[buf].swapfile = false
+	if vim.fn.filereadable(path) == 1 then
+		vim.fn.bufload(buf)
+	end
 
-		if vim.bo[buf].filetype == "" then
-			local ft = vim.filetype.match({ filename = path })
-			if ft then
-				vim.bo[buf].filetype = ft
-			end
+	if vim.bo[buf].filetype == "" then
+		local ft = vim.filetype.match({ filename = path })
+		if ft then
+			vim.bo[buf].filetype = ft
 		end
 	end
+
+	attach_save_guard(buf, path)
 
 	local base = file.base or base_from_status(file, buf)
 	local review = Review.new(path, buf, base, file.hunks or {})

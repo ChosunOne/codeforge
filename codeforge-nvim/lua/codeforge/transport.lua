@@ -170,6 +170,29 @@ function M.validate(cs)
 	return nil
 end
 
+---Derive a hunk's diff-type status from its lines: pure additions are
+---"added", pure removals "deleted", mixed "modified". Sender-provided
+---values are ignored: this is display metadata, not triage state.
+---@param hunk table
+---@return string status
+local function derive_hunk_status(hunk)
+	local plus, minus = 0, 0
+	for _, line in ipairs(hunk.lines) do
+		if line:sub(1, 1) == "+" then
+			plus = plus + 1
+		else
+			minus = minus + 1
+		end
+	end
+	if minus == 0 then
+		return "added"
+	end
+	if plus == 0 then
+		return "deleted"
+	end
+	return "modified"
+end
+
 ---Ingest a change-set into `state.changes`.
 ---@param cs table change-set
 ---@return boolean ok
@@ -204,10 +227,18 @@ function M.receive(cs)
 	change.title = change.title or change.id
 	change.timestamp = os.time()
 	change.status = nil
+	-- Resolve project-relative paths against the editor's cwd and derive
+	-- display status; sender-supplied values for both are ignored.
+	local seen = {}
 	for _, file in ipairs(change.files) do
+		file.path = vim.fn.fnamemodify(file.path, ":p")
+		if seen[file.path] then
+			return false, ("duplicate file path %q"):format(file.path)
+		end
+		seen[file.path] = true
 		file.decision = nil
 		for _, hunk in ipairs(file.hunks) do
-			hunk.status = nil
+			hunk.status = derive_hunk_status(hunk)
 		end
 	end
 

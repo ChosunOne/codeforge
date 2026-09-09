@@ -150,6 +150,50 @@ T["expanding a modified file should display hunks"] = function()
 	)
 end
 
+T["rendering an expanded hunk without status or description"] = function()
+	child.lua([[
+                local state = require("codeforge.state")
+                state.changes = {
+                        {
+                                id = "change-001",
+                                title = "Test",
+                                files = {
+                                        {
+                                                path = "src/file.lua",
+                                                status = "modified",
+                                                hunks = {
+                                                        { id = "h-bare-001", new_start = 0 },
+                                                }
+                                        }
+                                }
+                        }
+                }
+                state.current_change_index = 1
+                state.current_change_id = "change-001"
+        ]])
+
+	child.cmd("CodeForge")
+
+	child.type_keys("3gg")
+	child.type_keys("o")
+
+	local wins = child.api.nvim_list_wins()
+	local sidebar_win = wins[#wins]
+	local buf = child.api.nvim_win_get_buf(sidebar_win)
+	local lines = child.api.nvim_buf_get_lines(buf, 0, -1, false)
+
+	MiniTest.expect.equality(
+		string.find(lines[4], "h-bare-001", 1, true) ~= nil,
+		true,
+		{ fail_reason = "hunk id should be shown when description is absent; got " .. tostring(lines[4]) }
+	)
+	MiniTest.expect.equality(
+		string.find(lines[4], "[M]", 1, true) ~= nil,
+		true,
+		{ fail_reason = "bare hunks render as modified; got " .. tostring(lines[4]) }
+	)
+end
+
 local function seed_atomic_change()
 	child.lua([[
                 local state = require("codeforge.state")

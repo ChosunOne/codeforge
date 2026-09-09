@@ -148,9 +148,27 @@ T["machinery-owned fields are stripped on ingest"] = function()
 	MiniTest.expect.equality(recv(cs), true)
 	MiniTest.expect.equality(state_expr(".get_changes()[1].status"), vim.NIL)
 	MiniTest.expect.equality(state_expr(".get_changes()[1].files[1].decision"), vim.NIL)
-	MiniTest.expect.equality(state_expr(".get_changes()[1].files[1].hunks[1].status"), vim.NIL, {
-		fail_reason = "sender must not be able to pre-decide hunk status",
+	MiniTest.expect.equality(state_expr(".get_changes()[1].files[1].hunks[1].status"), "modified", {
+		fail_reason = "hunk status is derived from its lines, never taken from the sender",
 	})
+end
+
+T["relative file paths resolve against the editor cwd"] = function()
+	MiniTest.expect.equality(recv(valid()), true)
+	MiniTest.expect.equality(
+		state_expr(".get_changes()[1].files[1].path"),
+		child.fn.fnamemodify("src/target.lua", ":p"),
+		{ fail_reason = "relative paths must resolve against the editor cwd" }
+	)
+end
+
+T["duplicate file paths after resolution are rejected"] = function()
+	local cs = valid(function(c)
+		c.files[2] = vim.deepcopy(c.files[1])
+		c.files[2].path = "./src/target.lua"
+	end)
+	MiniTest.expect.equality(recv(cs), false)
+	MiniTest.expect.equality(last_err():find("duplicate", 1, true) ~= nil, true)
 end
 
 T["re-receiving the same id replaces the pending change"] = function()
@@ -196,7 +214,7 @@ end
 
 T["re-receiving an id whose file is under review is refused"] = function()
 	MiniTest.expect.equality(recv(valid()), true)
-	child.lua([[require("codeforge.state").reviews["src/target.lua"] = { hunk_status = {} }]])
+	child.lua([[require("codeforge.state").reviews[vim.fn.fnamemodify("src/target.lua", ":p")] = { hunk_status = {} }]])
 	MiniTest.expect.equality(
 		recv(valid(function(c)
 			c.title = "v2"

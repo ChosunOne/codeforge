@@ -171,14 +171,15 @@ return function(user_config)
 						if is_expanded and file.hunks and #file.hunks > 0 then
 							local review = state.get_review(file.path)
 							for _, hunk in ipairs(file.hunks) do
-								local hunk_status_upper = hunk.status:upper():sub(1, 1)
+								local hunk_status = hunk.status or "modified"
+								local hunk_status_upper = hunk_status:upper():sub(1, 1)
 								canvas:write("      ")
 								local hg, hg_hl = status_glyph(review and review.hunk_status[hunk.id])
 								canvas:write(hg .. " ", { group = hg_hl })
 								local live_row = review and review:hunk_row(hunk.id) or nil
 								canvas:write("L" .. (live_row or hunk.new_start) .. " ")
-								canvas:write(hunk.description .. " ")
-								local status_hl = require("codeforge.highlight").get_status_hl(hunk.status, true)
+								canvas:write((hunk.description or hunk.id) .. " ")
+								local status_hl = require("codeforge.highlight").get_status_hl(hunk_status, true)
 								canvas:write("[" .. hunk_status_upper .. "]\n", { group = status_hl })
 								track({ kind = "hunk", path = file.path, hunk_id = hunk.id })
 							end
