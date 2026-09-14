@@ -270,7 +270,7 @@ function Review:render()
 	self.extmark_ids = {}
 
 	for _, p in ipairs(self.placements) do
-		if p.region_mark and p.region_len then
+		if p.region_mark and p.region_len and p.region_len > 0 then
 			local r = p.region_row
 			if r ~= nil then
 				p.region_mark = vim.api.nvim_buf_set_extmark(self.buf, ns, r, 0, {
@@ -315,6 +315,8 @@ function Review:render()
 			end
 		end
 	end
+
+	require("codeforge.review.popup").refresh(self)
 end
 
 ---The live 0-indexed row of extmark `id`, or nil if the mark is gone.
@@ -394,6 +396,11 @@ function Review:hunk_at_row(row)
 		end
 		local rstart = self:_row_of(p.region_mark)
 		if rstart ~= nil and row >= rstart and row < rstart + (p.region_len or 1) then
+			return p
+		end
+		-- a zero-length resolved region (e.g. a rejected insertion) keeps its
+		-- position without an extmark
+		if p.region_len == 0 and p.region_row == row then
 			return p
 		end
 	end
@@ -583,7 +590,7 @@ function Review:apply_history_state(hunk_id, status, buffer_lines, placements)
 			p.fold = snap.fold
 			p.region_len = snap.region_len
 			p.region_row = snap.region_row
-			p.region_mark = snap.region_len and true or nil
+			p.region_mark = (snap.region_len and snap.region_len > 0) and true or nil
 			p.fold_mark = nil
 			p.sign_marks = {}
 		end
@@ -972,15 +979,6 @@ function Review:confirm_resolve()
 		hist_before.region = vim.api.nvim_buf_get_lines(self.buf, r.first, r.last + 1, false)
 		self:_apply_region(p, r.first, r.last, region)
 		self.hunk_status[r.hunk_id] = "accepted"
-		if #region > 0 then
-			p.region_row = r.first
-			p.region_mark = vim.api.nvim_buf_set_extmark(self.buf, diff.namespace, r.first, 0, {
-				end_row = r.first + #region - 1,
-				right_gravity = false,
-				end_right_gravity = true,
-			})
-			p.region_len = #region
-		end
 		self:render()
 		state.notify_change()
 		self:_record_triage(p, hist_before, buffer_before, placements_before, { status = "accepted", region = region })
@@ -1037,7 +1035,9 @@ end
 
 ---Replace the live buffer region `[first, last]` (0-indexed, inclusive)
 ---with `replacement`, clear this placement's decorations, and shift
----later placements by the line-count delta.
+---later placements by the line-count delta. Re-anchors the placement at the
+---written region (empty replacements keep only `region_row`, so resolved
+---zero-length hunks — e.g. a rejected insertion — stay findable).
 ---@param self Review
 ---@param p Placement
 ---@param first integer 0-indexed first row
@@ -1052,6 +1052,16 @@ function Review:_apply_region(p, first, last, replacement)
 	p.fold = nil
 	p.fold_mark = nil
 	self.expanded[p.hunk_id] = nil
+	p.region_row = first
+	p.region_len = #replacement
+	p.region_mark = nil
+	if #replacement > 0 then
+		p.region_mark = vim.api.nvim_buf_set_extmark(self.buf, diff.namespace, first, 0, {
+			end_row = first + #replacement - 1,
+			right_gravity = false,
+			end_right_gravity = true,
+		})
+	end
 end
 
 ---Install the review-buffer keymaps on `self.buf`.
@@ -1104,6 +1114,9 @@ function Review:setup_keymaps()
 	map(cfg.prev_hunk, function()
 		self:prev_hunk()
 	end, "CodeForge: previous hunk")
+	map(cfg.toggle_hunk_diff, function()
+		require("codeforge.review.popup").toggle_hunk(self)
+	end, "CodeForge: toggle hunk diff popup")
 end
 
 ---@param self Review
@@ -1207,8 +1220,11 @@ function Review:_reconcile()
 			end
 		end
 	end
+	local popup = require("codeforge.review.popup")
 	if changed then
-		self:render()
+		self:render() -- also refreshes an open popup
+	else
+		popup.refresh(self)
 	end
 	state.notify_change()
 end
@@ -1231,6 +1247,7 @@ function Review:_teardown_keymaps()
 		cfg.redo,
 		cfg.next_hunk,
 		cfg.prev_hunk,
+		cfg.toggle_hunk_diff,
 	}) do
 		if key then
 			pcall(vim.keymap.del, "n", key, { buffer = self.buf })
@@ -1251,6 +1268,7 @@ function Review:dismiss()
 		self._reconcile_autocmd = nil
 	end
 	self:_teardown_keymaps()
+	require("codeforge.review.popup").close(self)
 
 	if self._resolve then
 		self:_close_resolve()

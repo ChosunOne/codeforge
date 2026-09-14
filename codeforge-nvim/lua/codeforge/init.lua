@@ -18,6 +18,7 @@ M.config = {
 		dismiss = "<C-x>d",
 		next_hunk = "<C-x>n",
 		prev_hunk = "<C-x>b",
+		toggle_hunk_diff = "<C-x>p",
 	},
 }
 M._initialized = false
