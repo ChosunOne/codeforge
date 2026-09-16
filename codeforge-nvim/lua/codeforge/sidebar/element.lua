@@ -105,11 +105,22 @@ return function(user_config)
 		map(km.toggle_file, function()
 			local node = row_nodes[vim.fn.line(".")]
 			if node and node.kind == "file" then
-				actions.toggle_file(node.path)
+				local change = state.get_current_change()
+				for _, file in ipairs(change and change.files or {}) do
+					if file.path == node.path then
+						if file.status == "added" then
+							-- Opening a new file is a preview, not an acceptance.
+							actions.open_review(node.path)
+						else
+							actions.toggle_file(node.path)
+						end
+						return
+					end
+				end
 			elseif node and node.kind == "completed" then
 				actions.reopen_completed(node.id)
 			end
-		end, "Toggle file / reopen completed")
+		end, "Toggle file / review added file / reopen completed")
 		map(km.open_file, function()
 			local node = row_nodes[vim.fn.line(".")]
 			if not node then

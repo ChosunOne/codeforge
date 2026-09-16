@@ -21,8 +21,7 @@ end
 
 ---Load a real which-key in the child (from the host's plugin dir), so we test
 ---against the actual cache-regeneration contract rather than a mock. Skips the
----case when which-key is not installed: these tests verify codeforge's
----decoupled announcement against a real consumer, not a hard dependency.
+---case when which-key is not installed: the integration is optional.
 local function load_whichkey()
 	local ok = child.lua_get([[vim.fn.isdirectory(vim.fn.stdpath("data") .. "/lazy/which-key.nvim") == 1]])
 	if not ok then
@@ -34,8 +33,8 @@ local function load_whichkey()
 	child.lua([[vim.wait(150)]])
 end
 
----Ask which-key's cache whether it can see `lhs` in `buf`, and whether it
----installed a trigger for the `<C-x>`/`o` prefix.
+---Check the cached tree AND the actual installed trigger. A cached trigger
+---candidate alone does not mean that pressing the prefix will open a popup.
 ---@param buf integer
 ---@param lhs string
 ---@param trigger_prefix string?
@@ -44,13 +43,13 @@ local function wk_sees(buf, lhs, trigger_prefix)
 		[=[(function()
 			local Buf = require("which-key.buf")
 			local m = Buf.bufs[%d] and Buf.bufs[%d].modes["n"]
-			if not m then return { cached = false, sees = false, trigger = false } end
 			local trig = false
-			for _, t in ipairs(m.triggers or {}) do
-				if t.keys == %s then trig = true end
+			for _, t in ipairs(vim.api.nvim_buf_get_keymap(%d, "n")) do
+				if t.lhs == %s and t.desc == "which-key-trigger" then trig = true end
 			end
-			return { cached = true, sees = m.tree:find(%s) ~= nil, trigger = trig }
+			return { cached = m ~= nil, sees = m ~= nil and m.tree:find(%s) ~= nil, trigger = trig }
 		end)()]=],
+		buf,
 		buf,
 		buf,
 		vim.inspect(trigger_prefix or "<C-X>"),
@@ -118,6 +117,43 @@ T["which-key sees review keymaps on a never-opened file (bufload happens before 
 	MiniTest.expect.equality(after.sees, true, {
 		fail_reason = "which-key must see <C-x> even when bufload raced our keymap install, got " .. vim.inspect(after),
 	})
+end
+
+T["opening a review does not leave a stale which-key mode queued"] = function()
+	local path = F.tmp_path()
+	child.fn.writefile({ "a", "b", "c" }, path)
+	child.cmd("edit " .. path)
+	load_whichkey()
+	F.seed_change(path, { "a", "b", "c" }, { F.replace_hunk("h1", 2, "b", "B") })
+
+	-- Queue an update before installing review mappings, in the same tick.
+	-- Clearing the Mode here strands a stale job that can remove the new
+	-- Ctrl-x trigger, depending on which job runs last.
+	local stale = child.lua_get(string.format(
+		[[(function()
+		local Buf = require("which-key.buf")
+		local Triggers = require("which-key.triggers")
+		local buf = vim.fn.bufnr(%s)
+		Buf.get({ buf = buf, mode = "n", update = true })
+		require("codeforge.review.buffer").open(%s)
+		local count = 0
+		for mode in pairs(Triggers.suspended) do
+			if mode.buf.buf == buf and Buf.bufs[buf].modes[mode.mode] ~= mode then
+				count = count + 1
+			end
+		end
+		return count
+	end)()]],
+		vim.inspect(path),
+		vim.inspect(path)
+	))
+	MiniTest.expect.equality(stale, 0)
+	child.lua([[vim.wait(150)]])
+	MiniTest.expect.equality(wk_sees(child.fn.bufnr(path), "<C-x>n").trigger, true)
+
+	child.api.nvim_win_set_cursor(0, { 1, 0 })
+	child.type_keys(100, "<C-x>", "n")
+	MiniTest.expect.equality(child.api.nvim_win_get_cursor(0)[1], 2)
 end
 
 -- ── Removal must be announced too, or which-key keeps stale entries ──────
@@ -236,6 +272,18 @@ T["announce leaves buffer contents, changedtick, and filetype untouched"] = func
 			.. " after="
 			.. vim.inspect(after),
 	})
+end
+
+T["announce does not replay file-load hooks or lazy-load which-key"] = function()
+	child.lua([[
+		_G.read_events = 0
+		vim.api.nvim_create_autocmd("BufReadPost", {
+			callback = function() _G.read_events = _G.read_events + 1 end,
+		})
+		require("codeforge.keymaps").announce(vim.api.nvim_get_current_buf())
+	]])
+	MiniTest.expect.equality(child.lua_get("_G.read_events"), 0)
+	MiniTest.expect.equality(child.lua_get([[package.loaded["which-key"] == nil]]), true)
 end
 
 T["announce is a no-op for an invalid buffer"] = function()

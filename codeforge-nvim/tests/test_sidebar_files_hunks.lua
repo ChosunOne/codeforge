@@ -318,21 +318,48 @@ T["pressing o on a deleted file toggles its decision between accepted and reject
 	MiniTest.expect.equality(child.lua_get([[require("codeforge.state").changes[1].files[1].decision]]), "accepted")
 end
 
-T["pressing o on an added file toggles its decision; the glyph color matches"] = function()
-	seed_atomic_change()
+T["pressing o on an added file opens review without accepting or completing it"] = function()
+	local path = child.fn.tempname() .. ".lua"
+	child.lua(string.format(
+		[[
+		assert(require("codeforge.transport").receive({
+			id = "added-only", title = "New file", files = { {
+				path = %s, status = "added", hunks = { {
+					id = "add", old_start = 1, old_lines = 0,
+					new_start = 1, new_lines = 1, lines = { "+return 42" },
+				} },
+			} },
+		}))
+	]],
+		vim.inspect(path)
+	))
 	child.cmd("CodeForge")
+	MiniTest.expect.equality(await_line(3, path):find("^○") ~= nil, true)
 
-	MiniTest.expect.equality(await_line(4, "src/new_module.lua"):find("^○", 1, false) ~= nil, true, {
-		fail_reason = "added file should start undecided (○)",
+	child.type_keys("3gg", "o")
+	MiniTest.expect.equality(child.lua_get([[#require("codeforge.state").changes]]), 1, {
+		fail_reason = "opening the only added file must not complete/remove its change",
 	})
-
-	child.type_keys("4gg")
-	child.type_keys("o")
-	local row = await_line(4, "●")
-	MiniTest.expect.equality(row:find("●", 1, true) == 1, true, {
-		fail_reason = "added file should show ● after toggle, got " .. row,
+	MiniTest.expect.equality(child.lua_get([[require("codeforge.state").changes[1].files[1].decision == nil]]), true)
+	MiniTest.expect.equality(child.lua_get([[next(require("codeforge.state").completed) == nil]]), true)
+	MiniTest.expect.equality(child.lua_get([[#require("codeforge.history").undo_stack]]), 0)
+	MiniTest.expect.equality(child.api.nvim_buf_get_name(0), path)
+	MiniTest.expect.equality(child.api.nvim_buf_get_lines(0, 0, -1, false), { "return 42" })
+	MiniTest.expect.equality(
+		child.lua_get(string.format(
+			[[(function()
+		local review = require("codeforge.state").get_review(%s)
+		return review ~= nil and review.buf == vim.api.nvim_get_current_buf()
+			and review.hunk_status.add == nil
+	end)()]],
+			vim.inspect(path)
+		)),
+		true
+	)
+	MiniTest.expect.equality(child.fn.filereadable(path), 0, {
+		fail_reason = "preview must not create the file on disk",
 	})
-	MiniTest.expect.equality(child.lua_get([[require("codeforge.state").changes[1].files[2].decision]]), "accepted")
+	MiniTest.expect.equality(await_line(3, path):find("^○") ~= nil, true)
 end
 
 T["pressing <CR> on a deleted file does not open a review buffer"] = function()
