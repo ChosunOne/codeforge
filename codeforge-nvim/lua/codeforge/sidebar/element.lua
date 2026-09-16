@@ -143,6 +143,10 @@ return function(user_config)
 		map(km.reject_pending, function()
 			actions.reject_pending()
 		end, "Reject all pending hunks in change")
+
+		-- dap-ui renders into a reusable buffer whose keymaps change here, so tell
+		-- mapping caches (which-key and friends) to re-read it.
+		require("codeforge.keymaps").announce(buf)
 	end
 
 	function element.render()

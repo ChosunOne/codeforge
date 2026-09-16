@@ -281,4 +281,60 @@ function M.classify_modify(old_block, new_block)
 	end
 	return kinds
 end
+
+---Map every 0-indexed row of `old_lines` to its 0-indexed row in
+---`new_lines`, or `false` when that old row is gone (deleted or coalesced away).
+---Rows are matched by a line diff, so a row that was *edited in place* still has
+---an entry (pointing at its new row), while a row that was *removed* maps to
+---`false`. Callers use this to tell "the user amended this line" from "the user
+---deleted this line", which a stale extmark alone cannot express.
+---@param old_lines string[]
+---@param new_lines string[]
+---@return table<integer, integer|false> map 0-indexed old row -> 0-indexed new row | false
+function M.row_map(old_lines, new_lines)
+	local map = {} ---@type table<integer, integer|false>
+	if #old_lines == 0 then
+		return map
+	end
+	if #old_lines == #new_lines and vim.deep_equal(old_lines, new_lines) then
+		for r = 0, #old_lines - 1 do
+			map[r] = r
+		end
+		return map
+	end
+
+	local spans = vim.diff(table.concat(old_lines, "\n"), table.concat(new_lines, "\n"), {
+		result_type = "indices",
+		algorithm = "histogram",
+	})
+
+	-- Walk the diff spans, mapping unchanged runs 1:1 and pairing up the rows of
+	-- each changed span positionally (surplus old rows are gone; surplus new rows
+	-- are insertions nothing maps to).
+	local po, pn = 1, 1 -- next 1-based row to account for in each side
+	for _, span in ipairs(spans) do
+		local f, fc, t, tc = span[1], span[2], span[3], span[4]
+		-- git's `--unified=0` convention: a zero count anchors *before* the
+		-- given line, so the affected run starts one line later.
+		local fo = (fc == 0) and (f + 1) or f
+		local fn = (tc == 0) and (t + 1) or t
+		-- unchanged run before this span
+		for k = 0, (fo - po) - 1 do
+			map[(po + k) - 1] = (pn + k) - 1
+		end
+		-- the changed span itself
+		for k = 0, fc - 1 do
+			map[(fo + k) - 1] = (k < tc) and ((fn + k) - 1) or false
+		end
+		po = fo + fc
+		pn = fn + tc
+	end
+	-- unchanged tail
+	while po <= #old_lines do
+		map[po - 1] = pn - 1
+		po, pn = po + 1, pn + 1
+	end
+	return map
+end
+
 return M

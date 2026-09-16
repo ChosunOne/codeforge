@@ -24,6 +24,8 @@ local merge = require("codeforge.review.merge")
 ---@field hunk_status table<string, string> hunk_id -> 'pending|'rejected'|'accepted'
 ---@field proposal string[]? unmodified proposal P
 ---@field user_modified boolean true when the user edited the buffer during review
+---@field _baseline_lines string[]? buffer content at the last machine write/render,
+---  used by the reconciler to tell an in-place amendment from a deletion
 ---@field _reconcile_timer any? debounce timer for the edit reconciler
 local Review = {}
 Review.__index = Review
@@ -235,6 +237,7 @@ function Review:apply_hunks()
 	self.proposal = out
 	vim.api.nvim_buf_set_lines(self.buf, 0, -1, false, out)
 	self._machine_tick = vim.api.nvim_buf_get_changedtick(self.buf)
+	self._baseline_lines = vim.deepcopy(out)
 end
 
 ---Stores each extmark's id back on the placement so the live row can be
@@ -317,6 +320,10 @@ function Review:render()
 	end
 
 	require("codeforge.review.popup").refresh(self)
+
+	-- Record the buffer as it stands after this render: the reconciler diffs
+	-- against it to interpret the user's next edit.
+	self._baseline_lines = vim.api.nvim_buf_get_lines(self.buf, 0, -1, false)
 end
 
 ---The live 0-indexed row of extmark `id`, or nil if the mark is gone.
@@ -1369,6 +1376,9 @@ function Review:setup_keymaps()
 	map(cfg.toggle_hunk_diff, function()
 		require("codeforge.review.popup").toggle_hunk(self)
 	end, "CodeForge: toggle hunk diff popup")
+
+	-- Tell mapping caches (which-key and friends) the buffer's local maps changed.
+	require("codeforge.keymaps").announce(self.buf)
 end
 
 ---@param self Review
@@ -1438,44 +1448,62 @@ function Review:_reconcile()
 	end
 
 	local buf_lines = vim.api.nvim_buf_get_lines(self.buf, 0, -1, false)
+	-- Interpret this edit against the last rendered buffer: a row whose content
+	-- *changed* was amended in place (the hunk stays pending and adopts the new
+	-- text); a row that is *gone* was deleted (drop its sign). A stale extmark
+	-- alone cannot express that distinction.
+	local rows = merge.row_map(self._baseline_lines or buf_lines, buf_lines)
 	local changed = false
 	for _, p in ipairs(self.placements) do
 		local st = self.hunk_status[p.hunk_id]
 		if st ~= "accepted" and st ~= "rejected" and p.sign_marks then
 			local kept_adds, kept_kinds, kept_contents, kept_marks = {}, {}, {}, {}
-			local ndropped = 0
 			for i, mark in ipairs(p.sign_marks) do
+				local expected = p.add_contents and p.add_contents[i]
+				local old_row = p.adds and p.adds[i]
+				local row = self:_row_of(mark)
 				local drop = false
-				if mark then
-					local row = self:_row_of(mark)
-					local expected = p.add_contents and p.add_contents[i]
-					local actual = row ~= nil and buf_lines[row + 1] or nil
-					if expected ~= nil and actual ~= expected then
-						vim.api.nvim_buf_del_extmark(self.buf, diff.namespace, mark)
+				local new_row = old_row
+
+				if mark and expected ~= nil and not (row ~= nil and buf_lines[row + 1] == expected) then
+					-- The sign drifted or its line was rewritten. Only a *deleted*
+					-- baseline row maps to false; an amended row keeps its hunk.
+					local mapped = old_row ~= nil and rows[old_row] or nil
+					if mapped == false or mapped == nil then
 						drop = true
-						changed = true
+					else
+						new_row = mapped
 					end
+					-- Re-anchor on the row the content now lives on (render rebuilds
+					-- the extmark). Untouched rows keep their mark so it can track
+					-- the content across unrelated insertions above.
+					vim.api.nvim_buf_del_extmark(self.buf, diff.namespace, mark)
+					mark = nil
+					changed = true
 				end
-				if not drop then
-					kept_adds[#kept_adds + 1] = p.adds and p.adds[i] or nil
-					kept_kinds[#kept_kinds + 1] = p.kinds and p.kinds[i] or nil
-					kept_contents[#kept_contents + 1] = p.add_contents and p.add_contents[i] or nil
-					kept_marks[#kept_marks + 1] = mark
+
+				if drop then
+					-- skip: this line left the hunk
 				else
-					ndropped = ndropped + 1
+					kept_adds[#kept_adds + 1] = new_row
+					kept_kinds[#kept_kinds + 1] = p.kinds and p.kinds[i] or nil
+					local content = expected
+					if mark == nil and new_row ~= nil and buf_lines[new_row + 1] ~= nil then
+						content = buf_lines[new_row + 1]
+					end
+					kept_contents[#kept_contents + 1] = content
+					kept_marks[#kept_marks + 1] = mark
 				end
 			end
-			if ndropped > 0 then
-				p.adds = kept_adds
-				p.kinds = kept_kinds
-				p.add_contents = kept_contents
-				p.sign_marks = kept_marks
-			end
+			p.adds = kept_adds
+			p.kinds = kept_kinds
+			p.add_contents = kept_contents
+			p.sign_marks = kept_marks
 		end
 	end
 	local popup = require("codeforge.review.popup")
 	if changed then
-		self:render() -- also refreshes an open popup
+		self:render() -- rebuilds signs and refreshes an open popup
 	else
 		popup.refresh(self)
 	end
@@ -1506,6 +1534,10 @@ function Review:_teardown_keymaps()
 			pcall(vim.keymap.del, "n", key, { buffer = self.buf })
 		end
 	end
+
+	-- Removal changes the buffer's local maps too; announce so caches drop
+	-- the now-dangling entries.
+	require("codeforge.keymaps").announce(self.buf)
 end
 
 ---@param self Review
