@@ -216,6 +216,23 @@ T["dismiss restores the original U into the buffer"] = function()
 	MiniTest.expect.equality(review, true, { fail_reason = "review record should be cleared after dismiss" })
 end
 
+T["dismiss keeps user edits outside the hunks (final assembly)"] = function()
+	local O = { "a", "b", "c" }
+	local U = { "USER", "b", "c" }
+	local path = F.tmp_path()
+	child.fn.writefile(O, path)
+	child.cmd("edit " .. path)
+	child.api.nvim_buf_set_lines(0, 0, -1, false, U)
+	local hunk = F.replace_hunk("hunk-001", 2, "b", "B")
+	F.seed_change(path, O, { hunk })
+
+	child.lua(string.format([[require("codeforge.review.buffer").open(%s)]], vim.inspect(path)))
+	child.lua(string.format([[require("codeforge.review.buffer").dismiss(%s)]], vim.inspect(path)))
+
+	local buf = Q.find_buf(path)
+	Q.expect_lines("final buffer keeps the unrelated U edit", child.api.nvim_buf_get_lines(buf, 0, -1, false), U)
+end
+
 T["pressing <CR> on a file line in the sidebar opens the review buffer"] = function()
 	local O = { "a", "b", "c" }
 	local path = F.tmp_path()

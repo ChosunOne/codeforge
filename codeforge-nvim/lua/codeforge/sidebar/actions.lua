@@ -1,5 +1,102 @@
 local M = {}
 
+---Buffer lines for `path`, normalized so a lone empty line reads as empty.
+---@param path string
+---@return string[]
+local function read_buffer(path)
+	local buf = vim.fn.bufadd(path)
+	if vim.fn.filereadable(path) == 1 then
+		vim.fn.bufload(buf)
+	end
+	local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+	if #lines == 1 and lines[1] == "" then
+		return {}
+	end
+	return lines
+end
+
+---Set `path`'s buffer to `lines` (an empty list yields one empty line).
+---@param path string
+---@param lines string[]
+local function write_buffer(path, lines)
+	local buf = vim.fn.bufadd(path)
+	vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+end
+
+---True when every hunk carries the geometry `apply_hunks` needs. Sidebar-only
+---fixtures and display rows may omit it; transport-validated changes never do.
+---@param file File
+---@return boolean
+local function hunks_applicable(file)
+	local hunks = file.hunks or {}
+	if #hunks == 0 then
+		return false
+	end
+	for _, h in ipairs(hunks) do
+		if type(h.old_start) ~= "number" or type(h.old_lines) ~= "number" or type(h.lines) ~= "table" then
+			return false
+		end
+	end
+	return true
+end
+
+---Apply the buffer content for an atomic (added/deleted) file decision and
+---return the content that was there before and after, for the history record.
+---Accepted keeps the previewed content (including review hand-edits); rejected
+---keeps the user's pre-review baseline (empty for a new file, the unsaved
+---content for a deleted one). Review machinery is torn down first so the
+---decision and the content stay consistent. Never writes to disk.
+---@param file File
+---@param decision string|nil "accepted"|"rejected"|nil (nil = undecided baseline)
+---@return string[] before_lines
+---@return string[] after_lines
+local function apply_atomic_content(file, decision)
+	local path = file.path
+	local state = require("codeforge.state")
+	local buffer = require("codeforge.review.buffer")
+
+	local review = state.get_review(path)
+	local before_lines = read_buffer(path)
+	-- The pre-review baseline is captured on first decision and kept on the file
+	-- entry: a live review's snapshot U is authoritative, otherwise the buffer
+	-- still holds the user's own content. Never reconstruct from the change-set's
+	-- base, which would discard unsaved edits.
+	if file.atomic_baseline == nil then
+		file.atomic_baseline = review and review.buf_snapshot or before_lines
+	end
+	local baseline = file.atomic_baseline
+
+	-- Accepting an added file keeps what the preview shows, hand-edits and all;
+	-- dismissing below would otherwise rebuild a pristine proposal.
+	local keep_preview = decision == "accepted" and file.status == "added" and review ~= nil
+
+	if review then
+		buffer.dismiss(path)
+	end
+
+	local after_lines
+	if decision == "accepted" then
+		if file.status == "added" then
+			if keep_preview then
+				after_lines = before_lines
+			elseif hunks_applicable(file) then
+				local Review = require("codeforge.review.review")
+				local review_obj = Review.new(path, vim.fn.bufadd(path), baseline, file.hunks)
+				review_obj:apply_hunks()
+				after_lines = read_buffer(path)
+			else
+				after_lines = baseline
+			end
+		else
+			after_lines = {}
+		end
+	else
+		after_lines = baseline
+	end
+	write_buffer(path, after_lines)
+	return before_lines, after_lines
+end
+
 ---@param path string file path within the current change
 function M.toggle_file(path)
 	local state = require("codeforge.state")
@@ -15,14 +112,15 @@ function M.toggle_file(path)
 			else
 				local before = file.decision
 				file.decision = file.decision == "accepted" and "rejected" or "accepted"
+				local before_lines, after_lines = apply_atomic_content(file, file.decision)
 				state.notify_change()
 				state.maybe_complete(change)
 				require("codeforge.history").record({
 					kind = "decision",
 					change_id = change.id,
 					path = path,
-					before = { decision = before },
-					after = { decision = file.decision },
+					before = { decision = before, buffer = before_lines },
+					after = { decision = file.decision, buffer = after_lines },
 				})
 			end
 			return
@@ -108,14 +206,15 @@ local function sweep_pending(verb)
 			if file.decision == nil then
 				local before = file.decision
 				file.decision = verb == "accept" and "accepted" or "rejected"
+				local before_lines, after_lines = apply_atomic_content(file, file.decision)
 				decided_atomic = true
 				total = total + 1
 				hist.record({
 					kind = "decision",
 					change_id = change.id,
 					path = file.path,
-					before = { decision = before },
-					after = { decision = file.decision },
+					before = { decision = before, buffer = before_lines },
+					after = { decision = file.decision, buffer = after_lines },
 				})
 			end
 		elseif file.status == "modified" and #(file.hunks or {}) > 0 then
@@ -187,6 +286,12 @@ local function apply_record(rec, direction)
 				for _, file in ipairs(change.files or {}) do
 					if file.path == rec.path then
 						file.decision = target.decision
+						if target.buffer then
+							-- exact editor-undo restore of the recorded content
+							write_buffer(file.path, target.buffer)
+						else
+							apply_atomic_content(file, target.decision)
+						end
 						state.notify_change()
 						state.maybe_complete(change)
 						return true

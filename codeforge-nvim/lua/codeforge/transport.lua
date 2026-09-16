@@ -207,6 +207,28 @@ function M.receive(cs)
 		return false, ("change %q is already completed; send a new id"):format(cs.id)
 	end
 
+	-- Refuse a different change that claims a path a pending change already
+	-- tracks: `state.reviews` is keyed by path, so reviewing the second change
+	-- would silently return the first change's Review (wrong hunks). No queue
+	-- architecture here: the sender must resolve or re-send under one id.
+	local incoming = {}
+	for _, file in ipairs(cs.files) do
+		incoming[vim.fn.fnamemodify(file.path, ":p")] = file.path
+	end
+	for _, change in ipairs(state.changes) do
+		if change.id ~= cs.id then
+			for _, file in ipairs(change.files or {}) do
+				if incoming[vim.fn.fnamemodify(file.path, ":p")] then
+					return false,
+						("path %q is already tracked by pending change %q; resolve it before re-sending"):format(
+							incoming[vim.fn.fnamemodify(file.path, ":p")],
+							change.id
+						)
+				end
+			end
+		end
+	end
+
 	local existing_index
 	for i, change in ipairs(state.changes) do
 		if change.id == cs.id then

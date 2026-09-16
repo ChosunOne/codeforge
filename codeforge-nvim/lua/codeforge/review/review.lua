@@ -275,7 +275,7 @@ function Review:render()
 			if r ~= nil then
 				p.region_mark = vim.api.nvim_buf_set_extmark(self.buf, ns, r, 0, {
 					end_row = r + p.region_len - 1,
-					right_gravity = false,
+					right_gravity = true,
 					end_right_gravity = true,
 				})
 			else
@@ -348,6 +348,258 @@ function Review:toggle_fold(row)
 			return
 		end
 	end
+end
+
+---The live buffer region [first, last] (0-indexed, inclusive) a placement
+---occupies at final-assembly time. Resolved placements are located by their
+---region extmark; unresolved ones by their pending anchors. Returns
+---nil, nil when the placement cannot be located.
+---@param self Review
+---@param p Placement
+---@return integer? first
+---@return integer? last
+function Review:_region_span(p)
+	local st = self.hunk_status[p.hunk_id]
+	if st == "accepted" or st == "rejected" then
+		local r = self:_row_of(p.region_mark)
+		if r ~= nil then
+			return r, r + (p.region_len or 1) - 1
+		end
+		if p.region_len == 0 and p.region_row then
+			return p.region_row, p.region_row - 1
+		end
+		return nil, nil
+	end
+	return self:_region_rows(p)
+end
+
+---Assemble the post-review buffer. Resolved hunk regions keep their live
+---(resolved) text; unresolved hunks and the base regions between hunks fall
+---back to the user's pre-review snapshot `U`, so edits the user made outside
+---the proposed hunks survive completion and dismissal. Base regions the user
+---edited during review are kept as live text instead of being reverted.
+---
+---Returns the assembled lines and a list of unresolved gap conflicts (a gap
+---where the pre-review snapshot and the during-review live text both changed
+---the same line). When conflicts is non-empty the caller MUST NOT apply the
+---lines or finish the review: assembly has no safe choice and would otherwise
+---either write merge markers or silently drop a side.
+---@param self Review
+---@return string[] final
+---@return table[] conflicts
+function Review:assemble_final()
+	local base = self.base_content
+	local U = self.buf_snapshot
+	local live = vim.api.nvim_buf_get_lines(self.buf, 0, -1, false)
+	local placements = self.placements
+	local n = #placements
+
+	local spans = {}
+	local u_spans = {}
+
+	---The snapshot `U` span holding base region [start, start+count-1], as a
+	---1-indexed inclusive pair. A zero-length region (pure insertion/deletion
+	---hunk) yields an empty span `[b, b-1]` at the boundary where base position
+	---`start` sits in `U`, so `U`'s own lines there are preserved by the
+	---surrounding gaps instead of being dropped.
+	---@param start integer
+	---@param count integer
+	---@return integer? first
+	---@return integer? last
+	local function u_region(start, count)
+		if count > 0 then
+			return merge.region_span(base, U, start, count)
+		end
+		local b
+		if start <= #base then
+			local f = merge.region_span(base, U, start, 1)
+			if f then
+				b = f
+			else
+				b = 1
+				for p = start - 1, 1, -1 do
+					local _, l = merge.region_span(base, U, p, 1)
+					if l then
+						b = l + 1
+						break
+					end
+				end
+			end
+		elseif #base > 0 then
+			local _, l = merge.region_span(base, U, #base, 1)
+			b = (l and l + 1) or (#U + 1)
+		else
+			b = 1
+		end
+		return b, b - 1
+	end
+
+	for i, p in ipairs(placements) do
+		local f, l = self:_region_span(p)
+		spans[i] = { first = f, last = l }
+		local uf, ul = u_region(p.region_start, p.region_count)
+		u_spans[i] = { first = uf, last = ul }
+	end
+
+	local out = {} ---@type string[]
+	local conflicts = {} ---@type table[]
+	local base_cursor = 1
+
+	---Emit the base region between the previous hunk and placement `i`
+	---(i = n + 1 for the trailing region). The gap's snapshot `U` content is
+	---everything left between the adjacent hunks' U spans, so insertions the
+	---user made at a hunk boundary or before line 1 are preserved rather than
+	---dropped (or resurrected from base).
+	---@param i integer
+	local function emit_gap(i)
+		local nextp = placements[i]
+		local stop_base = nextp and (nextp.region_start - 1) or #base
+		local start_base = base_cursor
+		local count = stop_base - start_base + 1
+
+		local prev_span = i > 1 and spans[i - 1] or nil
+		local next_span = nextp and spans[i] or nil
+		local live_start
+		if i == 1 then
+			live_start = 0
+		elseif prev_span and prev_span.last then
+			live_start = prev_span.last + 1
+		end
+		local live_stop
+		if nextp then
+			if next_span and next_span.first then
+				live_stop = next_span.first - 1
+			end
+		else
+			live_stop = #live - 1
+		end
+
+		-- U gap = U lines between the adjacent hunks' U spans
+		local prev_u = i > 1 and u_spans[i - 1] or nil
+		local next_u = nextp and u_spans[i] or nil
+		local u_start
+		if i == 1 then
+			u_start = 1
+		elseif prev_u and prev_u.last then
+			u_start = prev_u.last + 1
+		end
+		local u_stop
+		if nextp then
+			if next_u and next_u.first then
+				u_stop = next_u.first - 1
+			end
+		else
+			u_stop = #U
+		end
+
+		local base_gap = {}
+		for k = start_base, stop_base do
+			base_gap[#base_gap + 1] = base[k]
+		end
+		local U_gap = {}
+		if u_start and u_stop and u_stop >= u_start then
+			for r = u_start, u_stop do
+				U_gap[#U_gap + 1] = U[r]
+			end
+		elseif not (u_start and u_stop) then
+			-- a neighbouring hunk's U span was unlocatable: fall back to the
+			-- region's own base correspondence, else its base lines
+			local u_first, u_last = merge.region_span(base, U, start_base, count)
+			if u_first and u_last then
+				for r = u_first, u_last do
+					U_gap[#U_gap + 1] = U[r]
+				end
+			else
+				for _, l in ipairs(base_gap) do
+					U_gap[#U_gap + 1] = l
+				end
+			end
+		end
+
+		local live_gap = nil
+		if live_start and live_stop then
+			live_gap = {}
+			for r = live_start, live_stop do
+				live_gap[#live_gap + 1] = live[r + 1] or ""
+			end
+		end
+
+		-- 3-way merge U against base with live as ours/theirs so disjoint
+		-- pre-review and during-review edits in the same gap both survive. When
+		-- both sides changed the same line no safe assembly exists: record the
+		-- conflict (the caller refuses to finish) and emit the during-review
+		-- text as a marker-free placeholder that is never applied as a result.
+		if live_gap and not vim.deep_equal(live_gap, base_gap) then
+			local res = merge.merge3(U_gap, base_gap, live_gap)
+			if res.conflict then
+				conflicts[#conflicts + 1] = {
+					base_start = start_base,
+					base_count = count,
+				}
+				for _, l in ipairs(live_gap) do
+					out[#out + 1] = l
+				end
+			else
+				for _, l in ipairs(res.lines) do
+					out[#out + 1] = l
+				end
+			end
+		else
+			for _, l in ipairs(U_gap) do
+				out[#out + 1] = l
+			end
+		end
+		base_cursor = stop_base + 1
+	end
+
+	for i, p in ipairs(placements) do
+		emit_gap(i)
+		local st = self.hunk_status[p.hunk_id]
+		local resolved = st == "accepted" or st == "rejected"
+		local span = spans[i]
+		local lines ---@type string[]
+		if resolved and span.first then
+			lines = {}
+			for r = span.first, span.last do
+				lines[#lines + 1] = live[r + 1]
+			end
+		else
+			local src = (resolved and st == "accepted") and self.proposal or U
+			local src_first, src_last = merge.region_span(base, src, p.region_start, p.region_count)
+			lines = {}
+			if src_first and src_last then
+				for r = src_first, src_last do
+					lines[#lines + 1] = src[r]
+				end
+			end
+		end
+		for _, l in ipairs(lines) do
+			out[#out + 1] = l
+		end
+		base_cursor = p.region_start + p.region_count
+	end
+	emit_gap(n + 1)
+
+	return out, conflicts
+end
+
+---Preflight final assembly without applying anything. Returns false with an
+---actionable message when a gap conflict would make finishing unsafe, so the
+---caller can keep the review and both snapshots rather than discarding a side.
+---@param self Review
+---@return boolean ok
+---@return string|nil message
+function Review:preflight()
+	if not self.buf or not vim.api.nvim_buf_is_valid(self.buf) then
+		return true
+	end
+	local _, conflicts = self:assemble_final()
+	if #conflicts > 0 then
+		return false,
+			"your pre-review edits and during-review edits conflict in a region outside the hunks; "
+				.. "reconcile or discard one side, then retry"
+	end
+	return true
 end
 
 ---Restore the deletion fold anchored at buffer row `row` (0-indexed)
@@ -1058,7 +1310,7 @@ function Review:_apply_region(p, first, last, replacement)
 	if #replacement > 0 then
 		p.region_mark = vim.api.nvim_buf_set_extmark(self.buf, diff.namespace, first, 0, {
 			end_row = first + #replacement - 1,
-			right_gravity = false,
+			right_gravity = true,
 			end_right_gravity = true,
 		})
 	end
@@ -1170,6 +1422,7 @@ function Review:revive()
 		return
 	end
 	state.set_review(self.path, self)
+	require("codeforge.review.buffer").rearm_review(self.path, self.buf)
 	self:render()
 	self:setup_keymaps()
 	self:_install_reconcile_watch()
@@ -1256,7 +1509,16 @@ function Review:_teardown_keymaps()
 end
 
 ---@param self Review
+---@return boolean finished
 function Review:dismiss()
+	-- Preflight before any teardown: a conflicting gap has no safe assembly, so
+	-- keep the review (buffer, snapshots, save guard) instead of finishing.
+	local pre_ok, pre_msg = self:preflight()
+	if not pre_ok then
+		vim.notify("CodeForge: " .. pre_msg, vim.log.levels.WARN)
+		return false
+	end
+
 	if self._reconcile_timer then
 		self._reconcile_timer:stop()
 		self._reconcile_timer:close()
@@ -1275,20 +1537,14 @@ function Review:dismiss()
 	end
 
 	if self.buf and vim.api.nvim_buf_is_valid(self.buf) then
-		for _, p in ipairs(self.placements) do
-			local st = self.hunk_status[p.hunk_id]
-			if st ~= "accepted" and st ~= "rejected" then
-				local first, last = self:_region_rows(p)
-				if first then
-					local replacement =
-						merge.region_in(self.base_content, self.buf_snapshot, p.region_start, p.region_count)
-					self:_apply_region(p, first, last, replacement)
-				end
-			end
-		end
+		local final = self:assemble_final()
+		vim.api.nvim_buf_set_lines(self.buf, 0, -1, false, final)
+		self._machine_tick = vim.api.nvim_buf_get_changedtick(self.buf)
 		vim.api.nvim_buf_clear_namespace(self.buf, diff.namespace, 0, -1)
 	end
+	require("codeforge.review.buffer").detach_save_guard(self.buf)
 	state.clear_review(self.path)
+	return true
 end
 
 return Review

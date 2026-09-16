@@ -220,7 +220,8 @@ T["reject with coordinate drift restores the right U lines"] = function()
 	Q.expect_lines(
 		"after reject (drifted + edited U)",
 		child.api.nvim_buf_get_lines(buf, 0, -1, false),
-		{ "a", "b", "c-USER", "d", "e" }
+		U,
+		{ fail_reason = "reject must restore the full pre-review snapshot U (unrelated edits included)" }
 	)
 	MiniTest.expect.equality(
 		hunk_status(path, "hunk-drift") == "rejected",

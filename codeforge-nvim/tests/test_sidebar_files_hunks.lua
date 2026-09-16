@@ -242,6 +242,57 @@ local function await_line(n, substr)
 	return sb and (child.api.nvim_buf_get_lines(sb, n - 1, n, false)[1] or "") or ""
 end
 
+T["file rows show project-relative paths and still target the canonical path"] = function()
+	local cwd = child.fn.getcwd()
+	local rel = "sub/inside.lua"
+	local abs_inside = cwd .. "/" .. rel
+	local sibling = cwd .. "-sibling/other.lua"
+	local nested = cwd .. "/a/b/c/deep.lua"
+	child.lua(string.format(
+		[[
+                local state = require("codeforge.state")
+                state.reset()
+                state.changes = { { id = "change-001", title = "Paths", files = {
+                        { path = %s, status = "modified", base = { "x" }, hunks = { { id = "h1", old_start = 1, old_lines = 1, new_start = 1, new_lines = 1, lines = { "-x", "+X" } } } },
+                        { path = %s, status = "added", hunks = {} },
+                        { path = %s, status = "added", hunks = {} },
+                } } }
+                state.current_change_index = 1
+                state.current_change_id = "change-001"
+        ]],
+		vim.inspect(abs_inside),
+		vim.inspect(sibling),
+		vim.inspect(nested)
+	))
+
+	child.cmd("CodeForge")
+	local row_inside = await_line(3, "inside.lua")
+	local row_sibling = await_line(4, "other.lua")
+	local row_nested = await_line(5, "deep.lua")
+
+	MiniTest.expect.equality(row_inside:find(rel, 1, true) ~= nil, true, {
+		fail_reason = "a path inside the project must display relative, got: " .. row_inside,
+	})
+	MiniTest.expect.equality(row_inside:find(cwd, 1, true) == nil, true, {
+		fail_reason = "the project root must not be shown for an inside path, got: " .. row_inside,
+	})
+	MiniTest.expect.equality(row_sibling:find(cwd .. "-sibling/other.lua", 1, true) ~= nil, true, {
+		fail_reason = "a similarly-prefixed sibling path must keep its full path, got: " .. row_sibling,
+	})
+	MiniTest.expect.equality(row_nested:find("a/b/c/deep.lua", 1, true) ~= nil, true, {
+		fail_reason = "a nested path must display relative, got: " .. row_nested,
+	})
+
+	-- row actions still target the canonical absolute path
+	child.type_keys("3gg")
+	child.type_keys("<CR>")
+	MiniTest.expect.equality(
+		child.lua_get(string.format([[require("codeforge.state").get_review(%s) ~= nil]], vim.inspect(abs_inside))),
+		true,
+		{ fail_reason = "<CR> must open a review for the canonical path" }
+	)
+end
+
 T["pressing o on a deleted file toggles its decision between accepted and rejected"] = function()
 	seed_atomic_change()
 	child.cmd("CodeForge")

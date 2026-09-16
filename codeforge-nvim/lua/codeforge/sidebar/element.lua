@@ -28,6 +28,22 @@ local function change_status_glyph(status)
 	return "○", highlight.get_review_status_hl(nil)
 end
 
+---Display path for a sidebar file row: relative to the project root (the
+---editor cwd) for files inside it, the full path otherwise. Canonical absolute
+---paths stay untouched in state, row actions, buffers, and logs.
+---@param path string canonical absolute path
+---@return string display
+local function display_path(path)
+	local root = vim.fn.fnamemodify(vim.fn.getcwd(), ":p")
+	if root:sub(-1) ~= "/" then
+		root = root .. "/"
+	end
+	if path:sub(1, #root) == root then
+		return path:sub(#root + 1)
+	end
+	return path
+end
+
 return function(user_config)
 	local element = {
 		allow_without_session = true,
@@ -163,7 +179,7 @@ return function(user_config)
 					if file.status == "modified" then
 						local indicator = is_expanded and "▾" or "▸"
 						canvas:write(indicator .. " ")
-						canvas:write(file.path .. " ", { group = "CodeForgeFile" })
+						canvas:write(display_path(file.path) .. " ", { group = "CodeForgeFile" })
 						local status_hl = require("codeforge.highlight").get_status_hl(file.status, false)
 						canvas:write("[" .. status_upper .. "]\n", { group = status_hl })
 						track({ kind = "file", path = file.path })
@@ -186,7 +202,7 @@ return function(user_config)
 						end
 					else
 						canvas:write("  ")
-						canvas:write(file.path, { group = "CodeForgeFile" })
+						canvas:write(display_path(file.path), { group = "CodeForgeFile" })
 						local status_hl = require("codeforge.highlight").get_status_hl(file.status, false)
 						canvas:write(" ")
 						canvas:write("[" .. status_upper .. "]\n", { group = status_hl })

@@ -146,6 +146,51 @@ function M.region_in(base, other, start, count)
 	return out
 end
 
+---Map a base region `[start, start + count - 1]` (1-indexed, count lines) to
+---the contiguous span of `other` holding the region's own base lines (unchanged
+---plus changed blocks), 1-indexed inclusive. Insertions `other` made at the
+---region's boundaries are deliberately excluded: they belong to the surrounding
+---gaps, so callers can splice `other` (e.g. the snapshot `U`) region by region
+---and still preserve boundary drift. Returns nil when the region has no base
+---line correspondence in `other`.
+---@param base string[]
+---@param other string[]
+---@param start integer 1-indexed base start
+---@param count integer base line count
+---@return integer? first 1-indexed other start (inclusive)
+---@return integer? last 1-indexed other end (inclusive)
+function M.region_span(base, other, start, count)
+	local want_end = start + count - 1
+	local first, last
+	local function add(o_start, o_count)
+		if o_count <= 0 then
+			return
+		end
+		if not first or o_start < first then
+			first = o_start
+		end
+		local e = o_start + o_count - 1
+		if not last or e > last then
+			last = e
+		end
+	end
+	for _, blk in ipairs(align_blocks(base, other)) do
+		if blk.b_count > 0 then
+			local b_end = blk.b_start + blk.b_count - 1
+			if b_end >= start and blk.b_start <= want_end then
+				if blk.kind == "unchanged" then
+					local lo = math.max(start, blk.b_start)
+					local hi = math.min(want_end, b_end)
+					add(blk.o_start + (lo - blk.b_start), hi - lo + 1)
+				else
+					add(blk.o_start, blk.o_count)
+				end
+			end
+		end
+	end
+	return first, last
+end
+
 ---Run `git merge-file -p ours base theirs` and return the result.
 ---@param ours string[]
 ---@param base string[]

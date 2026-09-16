@@ -3,6 +3,12 @@ local Review = require("codeforge.review.review")
 
 local M = {}
 
+---Per-buffer review save state: `save_guards[buf]` is the BufWriteCmd autocmd
+---id; `buf_options[buf]` the buffer options captured before the review loaded
+---its proposal.
+M.save_guards = {}
+M.buf_options = {}
+
 ---Find the file entry for `path` in the current change, or nil
 ---@param path string
 ---@return File|nil
@@ -20,10 +26,18 @@ local function find_file(path)
 	return nil
 end
 
----Take over saving for a review buffer with `buftype=acwrite`
+---Take over saving for a review buffer with `buftype=acwrite`.
+---
+---The guard owns the write for the duration of the review. It snapshots the
+---disk state on attach and again after every successful write, so consecutive
+---normal saves during review are allowed while a genuine external change (disk
+---no longer matches what we last saw, nor the buffer) is refused. `opts`
+---carries the buffer options captured before the review hijacked them, so
+---`detach_save_guard` can restore them once the review ends.
 ---@param buf integer
 ---@param path string
-local function attach_save_guard(buf, path)
+---@param opts? table captured buffer options
+local function attach_save_guard(buf, path, opts)
 	vim.api.nvim_create_augroup("codeforge_save_guard", { clear = false })
 	local ok, existing = pcall(vim.api.nvim_get_autocmds, {
 		event = "BufWriteCmd",
@@ -39,7 +53,7 @@ local function attach_save_guard(buf, path)
 	if vim.fn.filereadable(path) == 1 then
 		snapshot = vim.fn.readfile(path)
 	end
-	vim.api.nvim_create_autocmd("BufWriteCmd", {
+	local autocmd = vim.api.nvim_create_autocmd("BufWriteCmd", {
 		group = "codeforge_save_guard",
 		buffer = buf,
 		callback = function(args)
@@ -52,17 +66,66 @@ local function attach_save_guard(buf, path)
 			end
 			-- acwrite buffers are never written by vim's default path; do it
 			-- ourselves: drop to a normal buftype so `write!` uses the standard
-			-- machinery (eol/fileformat handling), with forceit skipping the
-			-- changed-file check and noautocmd preventing recursion into this
-			-- handler.
+			-- machinery (eol/fileformat handling). Hooks are driven with
+			-- `doautocmd` (not `nvim_exec_autocmds`, which swallows callback
+			-- errors) so a failing BufWritePre aborts the write and a failing
+			-- BufWritePost still surfaces. `noautocmd write!` prevents recursion
+			-- into this handler; the buftype is always restored.
+			local prev_buftype = vim.bo[args.buf].buftype
 			vim.bo[args.buf].buftype = ""
-			local ok, err = pcall(vim.cmd, "silent! noautocmd write!")
-			vim.bo[args.buf].buftype = "acwrite"
-			if not ok then
-				error(tostring(err), 0)
+			local pre_ok, pre_err = pcall(vim.api.nvim_buf_call, args.buf, function()
+				vim.cmd("doautocmd BufWritePre")
+			end)
+			local wok, werr = true, nil
+			local post_ok, post_err = true, nil
+			if pre_ok then
+				wok, werr = pcall(vim.cmd, "noautocmd write!")
+			end
+			if pre_ok and wok then
+				post_ok, post_err = pcall(vim.api.nvim_buf_call, args.buf, function()
+					vim.cmd("doautocmd BufWritePost")
+				end)
+			end
+			if vim.api.nvim_buf_is_valid(args.buf) then
+				vim.bo[args.buf].buftype = prev_buftype
+			end
+			-- advance the snapshot only once the file actually hit disk
+			if wok and vim.fn.filereadable(name) == 1 then
+				snapshot = vim.fn.readfile(name)
+			end
+			if not pre_ok then
+				error(tostring(pre_err), 0)
+			end
+			if not wok then
+				error(tostring(werr), 0)
+			end
+			if not post_ok then
+				error(tostring(post_err), 0)
 			end
 		end,
 	})
+	M.buf_options[buf] = opts
+	M.save_guards[buf] = autocmd
+end
+
+---Release the review's save guard for `buf`, restoring the buffer options the
+---review hijacked (`buftype`, `swapfile`). Idempotent.
+---@param buf integer
+function M.detach_save_guard(buf)
+	local autocmd = M.save_guards[buf]
+	if autocmd then
+		pcall(vim.api.nvim_del_autocmd, autocmd)
+		M.save_guards[buf] = nil
+	end
+	local opts = M.buf_options[buf]
+	M.buf_options[buf] = nil
+	if not vim.api.nvim_buf_is_valid(buf) then
+		return
+	end
+	if opts then
+		vim.bo[buf].buftype = opts.buftype or ""
+		vim.bo[buf].swapfile = opts.swapfile
+	end
 end
 
 ---Find an already-loaded buffer for `path`, or nil.
@@ -153,6 +216,7 @@ function M.ensure_review(path)
 	end
 
 	buf = vim.fn.bufadd(path)
+	local opts = { buftype = vim.bo[buf].buftype, swapfile = vim.bo[buf].swapfile }
 	vim.bo[buf].buftype = "acwrite"
 	vim.bo[buf].swapfile = false
 	if vim.fn.filereadable(path) == 1 then
@@ -166,7 +230,7 @@ function M.ensure_review(path)
 		end
 	end
 
-	attach_save_guard(buf, path)
+	attach_save_guard(buf, path, opts)
 
 	local base = file.base or base_from_status(file, buf)
 	local review = Review.new(path, buf, base, file.hunks or {})
@@ -185,10 +249,9 @@ function M.open(path)
 	show_in_main(review.buf)
 end
 
----Show an already-open review for `path` in the main window
----without re-snapshotting. No-op if no review is in progress.
----Use this to surface an existing review without the snapshot
----or build cost of `open`.
+---Show an already-open review for `path` in the main window.
+---No-op if no review is in progress. Use this to surface an existing review
+---without the snapshot or build cost of `open`.
 ---@param path string
 ---@return boolean shown
 function M.show_review(path)
@@ -200,15 +263,29 @@ function M.show_review(path)
 	return true
 end
 
----End reviewing `path`: restore the snapshotted buffer content and clear
----the review record.
+---Re-arm the review save guard and buffer options for a revived review
+---(undo after the completing action dismissed it). Idempotent-ish: the
+---existing guard, if any, is replaced.
 ---@param path string
+---@param buf integer
+function M.rearm_review(path, buf)
+	local opts = { buftype = vim.bo[buf].buftype, swapfile = vim.bo[buf].swapfile }
+	vim.bo[buf].buftype = "acwrite"
+	vim.bo[buf].swapfile = false
+	attach_save_guard(buf, path, opts)
+end
+
+---End reviewing `path`: restore the snapshotted buffer content and clear
+---the review record. Returns false when assembly is unsafe (a conflicting gap
+---between pre-review and during-review edits): the review is kept so no side
+---is silently discarded.
+---@param path string
+---@return boolean finished
 function M.dismiss(path)
 	local review = state.get_review(path)
 	if not review then
-		return
+		return true
 	end
-	review:dismiss()
+	return review:dismiss()
 end
-
 return M

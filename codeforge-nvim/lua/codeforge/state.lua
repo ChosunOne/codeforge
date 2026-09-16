@@ -44,6 +44,7 @@ end
 ---@field hunks Hunk[]
 ---@field base string[]?
 ---@field decision string? "accepted"|"rejected"
+---@field atomic_baseline string[]? pre-review content for an atomic file decision
 
 ---@class Hunk
 ---@field id string
@@ -282,11 +283,42 @@ function M.change_for_path(path)
 	return nil
 end
 
----Complete a fully-triaged change.
+---Preflight completion for `change`: refuse when any open review's final
+---assembly is unsafe (conflicting gap edits). Read-only: no teardown, no log.
 ---@param change Change
+---@return boolean ok
+---@return string|nil message
+function M.preflight_complete(change)
+	if not change then
+		return true
+	end
+	for _, file in ipairs(change.files or {}) do
+		local review = M.reviews[file.path]
+		if review then
+			local ok, msg = review:preflight()
+			if not ok then
+				return false, ("%s: %s"):format(file.path, msg)
+			end
+		end
+	end
+	return true
+end
+
+---Complete a fully-triaged change. Refuses (returns false, logs nothing,
+---keeps reviews and the change tracked) when any file's final assembly is
+---unsafe. Preflights every file before any teardown so a later conflict never
+---leaves an earlier file partially dismissed.
+---@param change Change
+---@return boolean completed
 function M.complete_change(change)
 	if not change then
-		return
+		return false
+	end
+
+	local ok, msg = M.preflight_complete(change)
+	if not ok then
+		vim.notify("CodeForge: cannot finish: " .. msg, vim.log.levels.WARN)
+		return false
 	end
 
 	local entry = M.build_log_entry(change)
@@ -301,6 +333,7 @@ function M.complete_change(change)
 	M.completed[change.id] = { change = change, reviews = reviews, entry = entry }
 	M.completed_order[#M.completed_order + 1] = change.id
 	M.remove_change(change.id, entry)
+	return true
 end
 
 ---Revive a completed change by id
@@ -355,6 +388,9 @@ function M.reopen_change(id)
 	local change = completed.change
 	for _, file in ipairs(change.files or {}) do
 		file.decision = nil
+		-- A reopen is a new review round: the previous final content becomes the
+		-- new `U`, so the old atomic baseline must be re-captured, not reused.
+		file.atomic_baseline = nil
 	end
 	table.insert(M.changes, change)
 	M.current_change_index = #M.changes
@@ -371,7 +407,8 @@ function M.reopen_change(id)
 end
 
 ---Watch for completion: when `change`'s derived status has left `pending`,
----complete it.
+---complete it. Returns false when the change is still pending or when
+---completion is refused (unsafe final assembly); the change stays tracked.
 ---@param change Change
 ---@return boolean completed
 function M.maybe_complete(change)
@@ -384,8 +421,7 @@ function M.maybe_complete(change)
 			if M.derive_status(change) == "pending" then
 				return false
 			end
-			M.complete_change(change)
-			return true
+			return M.complete_change(change)
 		end
 	end
 	return false

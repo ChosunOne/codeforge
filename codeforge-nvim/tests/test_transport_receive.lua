@@ -183,6 +183,103 @@ T["re-receiving the same id replaces the pending change"] = function()
 	MiniTest.expect.equality(state_expr(".get_changes()[1].title"), "Agent change v2")
 end
 
+T["a second change with a different id and an overlapping path is refused"] = function()
+	MiniTest.expect.equality(recv(valid()), true)
+
+	local cs = valid(function(c)
+		c.id = "agent-2"
+		c.files[1].hunks[1].id = "h2"
+		c.files[1].hunks[1].lines = { "-local b = 2", "+local b = 200" }
+	end)
+	MiniTest.expect.equality(recv(cs), false, { fail_reason = "a path already tracked by another change must be refused" })
+	MiniTest.expect.equality(last_err():find("agent-1", 1, true) ~= nil, true, {
+		fail_reason = "the error should name the owning change, got: " .. tostring(last_err()),
+	})
+	MiniTest.expect.equality(#state_expr(".get_changes()"), 1, {
+		fail_reason = "the refused change must not be admitted",
+	})
+	MiniTest.expect.equality(state_expr(".get_changes()[1].id"), "agent-1", {
+		fail_reason = "the tracked change must be untouched",
+	})
+end
+
+T["an overlapping path is detected across relative/absolute aliases"] = function()
+	MiniTest.expect.equality(recv(valid()), true)
+
+	local abs = child.fn.fnamemodify("src/target.lua", ":p")
+	local cs = valid(function(c)
+		c.id = "agent-2"
+		c.files[1].path = abs
+		c.files[1].hunks[1].id = "h2"
+	end)
+	MiniTest.expect.equality(recv(cs), false, { fail_reason = "aliased paths must normalize to the same file" })
+end
+
+T["a second change touching unrelated files is admitted"] = function()
+	MiniTest.expect.equality(recv(valid()), true)
+
+	local cs = valid(function(c)
+		c.id = "agent-2"
+		c.files[1].path = "src/other.lua"
+		c.files[1].hunks[1].id = "h2"
+	end)
+	MiniTest.expect.equality(recv(cs), true, { fail_reason = "unrelated paths must be admitted" })
+	MiniTest.expect.equality(#state_expr(".get_changes()"), 2)
+end
+
+T["reviewing the selected change never returns another change's review"] = function()
+	local path_a = "src/a.lua"
+	local path_b = "src/b.lua"
+	MiniTest.expect.equality(
+		recv({
+			id = "ca",
+			files = {
+				{
+					path = path_a,
+					status = "modified",
+					base = { "local a = 1", "local x = 2" },
+					hunks = {
+						{ id = "ha", old_start = 2, old_lines = 1, new_start = 2, new_lines = 1, lines = { "-local x = 2", "+local x = 20" } },
+					},
+				},
+			},
+		}),
+		true
+	)
+	MiniTest.expect.equality(
+		recv({
+			id = "cb",
+			files = {
+				{
+					path = path_b,
+					status = "modified",
+					base = { "local b = 1", "local y = 2" },
+					hunks = {
+						{ id = "hb", old_start = 2, old_lines = 1, new_start = 2, new_lines = 1, lines = { "-local y = 2", "+local y = 20" } },
+					},
+				},
+			},
+		}),
+		true
+	)
+
+	local abs_a = child.fn.fnamemodify(path_a, ":p")
+	local abs_b = child.fn.fnamemodify(path_b, ":p")
+
+	-- open change A's review, then select change B and open its review
+	child.lua(string.format([[require("codeforge.review.buffer").ensure_review(%s)]], vim.inspect(abs_a)))
+	child.lua([[require("codeforge.state").next_change()]])
+	MiniTest.expect.equality(state_expr(".current_change_id"), "cb")
+	child.lua(string.format([[require("codeforge.review.buffer").ensure_review(%s)]], vim.inspect(abs_b)))
+
+	local review = child.lua_get(string.format([[require("codeforge.state").get_review(%s)]], vim.inspect(abs_b)))
+	MiniTest.expect.equality(
+		child.lua_get(string.format([[require("codeforge.state").get_review(%s).hunks[1].id]], vim.inspect(abs_b))),
+		"hb",
+		{ fail_reason = "the review for B must carry B's hunks, got " .. vim.inspect(review) }
+	)
+end
+
 -- ── selection + refresh ────────────────────────────────────────────────────
 
 T["first received change becomes the current selection"] = function()
