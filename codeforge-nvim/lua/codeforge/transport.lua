@@ -39,53 +39,50 @@ end
 ---@param path string file path
 ---@param base string[] the file's base (empty for added files)
 ---@param status string the file's status
----@param hunk_ids table<string, boolean>
+---@param index integer position in the request (identity is assigned only on admission)
 ---@return string|nil error
-local function validate_hunk(h, path, base, status, hunk_ids)
+local function validate_hunk(h, path, base, status, index)
+	local context = ("path %s: hunk %d: "):format(path, index)
 	local nbase = #base
 	if type(h) ~= "table" then
-		return "hunk must be a table"
+		return context .. "hunk must be a table"
 	end
-	if type(h.id) ~= "string" or #h.id == 0 then
-		return ("path %s: hunk needs a non-empty string id"):format(path)
+	if h.id ~= nil then
+		return context .. "id is assigned by Neovim; omit it from publish requests"
 	end
-	if hunk_ids[h.id] then
-		return ("path %s: duplicate hunk id %q"):format(path, h.id)
-	end
-	hunk_ids[h.id] = true
 	for _, key in ipairs({ "old_start", "old_lines", "new_start", "new_lines" }) do
 		if not is_int(h[key]) then
-			return ("path %s hunk %q: %s must be an integer"):format(path, h.id, key)
+			return context .. key .. " must be an integer"
 		end
 	end
 	if h.old_start < 1 then
-		return ("path %s hunk %q: old_start must be >= 1"):format(path, h.id)
+		return context .. "old_start must be >= 1"
 	end
 	if h.old_lines < 0 then
-		return ("path %s hunk %q: old_lines must be >= 0"):format(path, h.id)
+		return context .. "old_lines must be >= 0"
 	end
 	if h.new_start < 1 then
-		return ("path %s hunk %q: new_start must be >= 1"):format(path, h.id)
+		return context .. "new_start must be >= 1"
 	end
 	if h.new_lines < 0 then
-		return ("path %s hunk %q: new_lines must be >= 0"):format(path, h.id)
+		return context .. "new_lines must be >= 0"
 	end
 	if status == "added" then
 		if h.old_start ~= 1 or h.old_lines ~= 0 then
-			return ("path %s hunk %q: an added-file hunk starts at line 1 with nothing removed"):format(path, h.id)
+			return context .. "an added-file hunk starts at line 1 with nothing removed"
 		end
 	elseif h.old_start + h.old_lines - 1 > nbase then
-		return ("path %s hunk %q: range extends past the end of base (%d lines)"):format(path, h.id, nbase)
+		return context .. ("range extends past the end of base (%d lines)"):format(nbase)
 	end
 	local nlines = array_len(h.lines)
 	if not nlines or nlines == 0 then
-		return ("path %s hunk %q: lines must be a non-empty list"):format(path, h.id)
+		return context .. "lines must be a non-empty list"
 	end
 	local nminus, nplus = 0, 0
 	for l = 1, nlines do
 		local line = h.lines[l]
 		if type(line) ~= "string" then
-			return ("path %s hunk %q: line %d must be a string"):format(path, h.id, l)
+			return context .. ("line %d must be a string"):format(l)
 		end
 		local prefix = line:sub(1, 1)
 		if prefix == "-" then
@@ -93,20 +90,20 @@ local function validate_hunk(h, path, base, status, hunk_ids)
 		elseif prefix == "+" then
 			nplus = nplus + 1
 		else
-			return ("path %s hunk %q: line %d has no +/- prefix: %s"):format(path, h.id, l, line)
+			return context .. ("line %d has no +/- prefix: %s"):format(l, line)
 		end
 	end
 	if nminus ~= h.old_lines then
-		return ("path %s hunk %q: %d '-' lines but old_lines = %d"):format(path, h.id, nminus, h.old_lines)
+		return context .. ("%d '-' lines but old_lines = %d"):format(nminus, h.old_lines)
 	end
 	if nplus ~= h.new_lines then
-		return ("path %s hunk %q: %d '+' lines but new_lines = %d"):format(path, h.id, nplus, h.new_lines)
+		return context .. ("%d '+' lines but new_lines = %d"):format(nplus, h.new_lines)
 	end
 	local row = h.old_start
 	for _, line in ipairs(h.lines) do
 		if line:sub(1, 1) == "-" then
 			if line:sub(2) ~= base[row] then
-				return ("path %s: hunk %q: removed line does not match base line %d"):format(path, h.id, row)
+				return context .. ("removed line does not match base line %d"):format(row)
 			end
 			row = row + 1
 		end
@@ -114,11 +111,13 @@ local function validate_hunk(h, path, base, status, hunk_ids)
 end
 
 ---@param file table file entry
----@param hunk_ids table<string, boolean> ids seen anywhere in the change
 ---@return string|nil error
-local function validate_file(file, hunk_ids)
+local function validate_file(file)
 	if type(file) ~= "table" then
 		return "file must be a table"
+	end
+	if file.id ~= nil then
+		return "file id is assigned by Neovim; omit it from publish requests"
 	end
 	if type(file.path) ~= "string" or #file.path == 0 then
 		return "file needs a non-empty string path"
@@ -152,35 +151,39 @@ local function validate_file(file, hunk_ids)
 	end
 	local sorted = {}
 	for j = 1, nhunks do
-		local err = validate_hunk(file.hunks[j], path, file.base or {}, file.status, hunk_ids)
+		local err = validate_hunk(file.hunks[j], path, file.base or {}, file.status, j)
 		if err then
 			return err
 		end
-		sorted[j] = file.hunks[j]
+		sorted[j] = j
 	end
 	-- Match apply_hunks' base-coordinate ordering without mutating the input.
 	-- Ranges are half-open; adjacency is valid. Shared starts (including
 	-- insertions) are ambiguous because application has no tie-break order.
 	table.sort(sorted, function(a, b)
-		return a.old_start < b.old_start
+		return file.hunks[a].old_start < file.hunks[b].old_start
 	end)
 	for j = 2, nhunks do
-		local prev, curr = sorted[j - 1], sorted[j]
+		local prev, curr = file.hunks[sorted[j - 1]], file.hunks[sorted[j]]
 		if curr.old_start == prev.old_start or curr.old_start < prev.old_start + prev.old_lines then
-			return ("path %s: hunks %q and %q have overlapping or ambiguous base ranges"):format(path, prev.id, curr.id)
+			return ("path %s: hunks %d and %d have overlapping or ambiguous base ranges"):format(
+				path,
+				sorted[j - 1],
+				sorted[j]
+			)
 		end
 	end
 end
 
 ---Validate a change-set without ingesting it
----@param cs table change-set: {id, title?, files = [{ path, status, base?, hunks}]}
+---@param cs table publish request: {title?, files = [{ path, status, base?, hunks}]} (no ids)
 ---@return string|nil error nil when valid
 function M.validate(cs)
 	if type(cs) ~= "table" then
 		return "change-set must be a table"
 	end
-	if type(cs.id) ~= "string" or #cs.id == 0 then
-		return "change-set needs a non-empty string id"
+	if cs.id ~= nil then
+		return "change id is assigned by Neovim; omit it from publish requests"
 	end
 	if cs.title ~= nil and type(cs.title) ~= "string" then
 		return "title must be a string when present"
@@ -189,9 +192,8 @@ function M.validate(cs)
 	if not nfiles or nfiles == 0 then
 		return "files must be a non-empty list"
 	end
-	local hunk_ids = {}
 	for i = 1, nfiles do
-		local err = validate_file(cs.files[i], hunk_ids)
+		local err = validate_file(cs.files[i])
 		if err then
 			return ("file %d: %s"):format(i, err)
 		end
@@ -222,67 +224,79 @@ local function derive_hunk_status(hunk)
 	return "modified"
 end
 
----Ingest a change-set into `state.changes`.
----@param cs table change-set
+-- A random editor-session prefix plus a monotonic sequence avoids clock-based
+-- collisions and never reuses an identity after state.reset(). IDs are opaque
+-- handles, not authorization tokens. Keep this private to admission.
+local identity_prefix
+local identity_sequence = 0
+
+local function next_change_id(state)
+	if not identity_prefix then
+		local ok, bytes = pcall(vim.uv.random, 16)
+		if not ok or type(bytes) ~= "string" or #bytes ~= 16 then
+			return nil, "cannot allocate change identity: random source unavailable"
+		end
+		identity_prefix = "cf-" .. bytes:gsub(".", function(c)
+			return ("%02x"):format(c:byte())
+		end)
+	end
+	-- Also avoid identities retained across a module reload or state import.
+	local used = {}
+	for _, change in ipairs(state.changes) do
+		used[change.id] = true
+	end
+	for id in pairs(state.completed) do
+		used[id] = true
+	end
+	for _, entry in ipairs(state.log) do
+		used[entry.id] = true
+	end
+	local id
+	repeat
+		identity_sequence = identity_sequence + 1
+		id = identity_prefix .. "-" .. identity_sequence
+	until not used[id]
+	return id
+end
+
+---Publish a new change into `state.changes`; never replace an existing change.
+---@param cs table publish request without change/file/hunk ids
 ---@return boolean ok
----@return string|nil err
+---@return table|string payload {id, files = [{path, hunks = [{id}]}]} or error string
 function M.receive(cs)
 	local err = M.validate(cs)
 	if err then
 		return false, err
 	end
 	local state = require("codeforge.state")
-	if state.completed[cs.id] then
-		return false, ("change %q is already completed; send a new id"):format(cs.id)
-	end
 
-	-- Refuse a different change that claims a path a pending change already
-	-- tracks: `state.reviews` is keyed by path, so reviewing the second change
-	-- would silently return the first change's Review (wrong hunks). No queue
-	-- architecture here: the sender must resolve or re-send under one id.
+	-- `state.reviews` is keyed by path: a second pending change must not claim
+	-- the same file. Publishing is create-only, even when retrying a request.
 	local incoming = {}
 	for _, file in ipairs(cs.files) do
-		incoming[vim.fn.fnamemodify(file.path, ":p")] = file.path
+		incoming[vim.fs.normalize(vim.fn.fnamemodify(file.path, ":p"))] = file.path
 	end
 	for _, change in ipairs(state.changes) do
-		if change.id ~= cs.id then
-			for _, file in ipairs(change.files or {}) do
-				if incoming[vim.fn.fnamemodify(file.path, ":p")] then
-					return false,
-						("path %q is already tracked by pending change %q; resolve it before re-sending"):format(
-							incoming[vim.fn.fnamemodify(file.path, ":p")],
-							change.id
-						)
-				end
-			end
-		end
-	end
-
-	local existing_index
-	for i, change in ipairs(state.changes) do
-		if change.id == cs.id then
-			existing_index = i
-			break
-		end
-	end
-	if existing_index then
-		for _, file in ipairs(state.changes[existing_index].files) do
-			if state.reviews[file.path] then
+		for _, file in ipairs(change.files or {}) do
+			local path = vim.fs.normalize(vim.fn.fnamemodify(file.path, ":p"))
+			if incoming[path] then
 				return false,
-					("change %q has a file under review (%s); resolve it before re-sending"):format(cs.id, file.path)
+					("path %q is already tracked by pending change %q; resolve it before re-sending"):format(
+						incoming[path],
+						change.id
+					)
 			end
 		end
 	end
 
 	local change = vim.deepcopy(cs)
-	change.title = change.title or change.id
 	change.timestamp = os.time()
 	change.status = nil
 	-- Resolve project-relative paths against the editor's cwd and derive
 	-- display status; sender-supplied values for both are ignored.
 	local seen = {}
 	for _, file in ipairs(change.files) do
-		file.path = vim.fn.fnamemodify(file.path, ":p")
+		file.path = vim.fs.normalize(vim.fn.fnamemodify(file.path, ":p"))
 		if seen[file.path] then
 			return false, ("duplicate file path %q"):format(file.path)
 		end
@@ -293,26 +307,38 @@ function M.receive(cs)
 		end
 	end
 
-	if existing_index then
-		state.changes[existing_index] = change
-	else
-		table.insert(state.changes, change)
+	-- Allocate only after all validation/admission checks pass. Return a fresh
+	-- receipt, in request order, with no references into the stored change.
+	local id, id_err = next_change_id(state)
+	if not id then
+		return false, id_err
 	end
+	change.id = id
+	change.title = change.title or id
+	local ack = { id = id, files = {} }
+	for i, file in ipairs(change.files) do
+		local receipt = { path = file.path, hunks = {} }
+		for j, hunk in ipairs(file.hunks) do
+			hunk.id = ("%s-f%d-h%d"):format(id, i, j)
+			receipt.hunks[j] = { id = hunk.id }
+		end
+		ack.files[i] = receipt
+	end
+	table.insert(state.changes, change)
 
 	if state.current_change_id == nil then
 		state.current_change_id = change.id
-		state.current_change_index = existing_index or #state.changes
+		state.current_change_index = #state.changes
 	end
 
 	state.notify_change()
-	local nfiles = #change.files
-	return true, ("received change %s (%d %s)"):format(change.id, nfiles, nfiles == 1 and "file" or "files")
+	return true, ack
 end
 
----Decode a JSON change-set and ingest it
+---Decode a JSON publish request and ingest it.
 ---@param json_str string
 ---@return boolean ok
----@return string|nil payload ack string on success, error message on failure
+---@return table|string payload structured receipt on success, error message on failure
 function M.receive_json(json_str)
 	if type(json_str) ~= "string" then
 		return false, "change-set JSON must be a string"
@@ -327,10 +353,10 @@ function M.receive_json(json_str)
 	return M.receive(cs)
 end
 
----Read a JSON change-set from `path` and ingest it.
+---Read a JSON publish request from `path` and ingest it.
 ---@param path string
 ---@return boolean ok
----@return string|nil payload ack string on success, error message on failure
+---@return table|string payload structured receipt on success, error message on failure
 function M.receive_file(path)
 	if type(path) ~= "string" or #path == 0 then
 		return false, "path must be a non-empty string"
@@ -346,9 +372,9 @@ function M.receive_file(path)
 	return true, payload
 end
 
----Throws on failure and returns the ack string
+---Throws on failure and returns the structured receipt.
 ---@param path string
----@return string ack
+---@return table ack
 function M.receive_file_strict(path)
 	local ok, payload = M.receive_file(path)
 	if not ok then

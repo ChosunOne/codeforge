@@ -25,14 +25,13 @@ local function write_json(content)
 	local path = F.tmp_path("_change.json")
 	if content == nil then
 		content = vim.json.encode({
-			id = "e2e-1",
 			title = "Delivered change",
 			files = {
 				{
 					path = "e2e_target.lua",
 					status = "added",
 					hunks = {
-						{ id = "h", old_start = 1, old_lines = 0, new_start = 1, new_lines = 1, lines = { "+hello" } },
+						{ old_start = 1, old_lines = 0, new_start = 1, new_lines = 1, lines = { "+hello" } },
 					},
 				},
 			},
@@ -57,6 +56,17 @@ local function call2(expr)
 		expr
 	))
 	return child.lua_get([[_G.__a]]), child.lua_get([[_G.__b]])
+end
+
+local function expect_ack(ack)
+	local change = child.lua_get([[require("codeforge.state").changes[1] ]])
+	MiniTest.expect.equality(type(ack), "table")
+	MiniTest.expect.equality(type(ack.id), "string")
+	MiniTest.expect.equality(#ack.id > 0, true)
+	MiniTest.expect.equality(ack, {
+		id = change.id,
+		files = { { path = change.files[1].path, hunks = { { id = change.files[1].hunks[1].id } } } },
+	})
 end
 
 -- ── socket lifecycle ───────────────────────────────────────────────────────
@@ -122,7 +132,7 @@ T["receive_json ingests a valid change-set"] = function()
 	local ok, ack =
 		call2(string.format([[require("codeforge.transport").receive_json(vim.fn.readfile(%s)[1])]], vim.inspect(json)))
 	MiniTest.expect.equality(ok, true)
-	MiniTest.expect.equality(ack, "received change e2e-1 (1 file)")
+	expect_ack(ack)
 	MiniTest.expect.equality(#child.lua_get([[require("codeforge.state").get_changes()]]), 1)
 end
 
@@ -135,7 +145,7 @@ end
 T["receive_json surfaces validation errors from receive"] = function()
 	local ok, err = call2([[require("codeforge.transport").receive_json(vim.json.encode({ files = {} }))]])
 	MiniTest.expect.equality(ok, false)
-	MiniTest.expect.equality(err:find("id", 1, true) ~= nil, true)
+	MiniTest.expect.equality(err:find("files", 1, true) ~= nil, true)
 end
 
 -- ── file delivery ──────────────────────────────────────────────────────────
@@ -144,20 +154,19 @@ T["receive_file ingests a JSON file"] = function()
 	local json = write_json()
 	local ok, ack = call2(string.format([[require("codeforge.transport").receive_file(%s)]], vim.inspect(json)))
 	MiniTest.expect.equality(ok, true)
-	MiniTest.expect.equality(ack, "received change e2e-1 (1 file)")
-	MiniTest.expect.equality(child.lua_get([[require("codeforge.state").get_changes()[1].id]]), "e2e-1")
+	expect_ack(ack)
 end
 
 T["receive_file accepts pretty-printed JSON"] = function()
 	local json = write_json(
-		'{\n  "id": "pretty-1",\n  "files": [\n    {\n      "path": "p.lua",\n'
-			.. '      "status": "added",\n      "hunks": [ { "id": "h", "old_start": 1, "old_lines": 0,\n'
+		'{\n  "title": "pretty",\n  "files": [\n    {\n      "path": "p.lua",\n'
+			.. '      "status": "added",\n      "hunks": [ { "old_start": 1, "old_lines": 0,\n'
 			.. '        "new_start": 1, "new_lines": 1, "lines": [ "+x" ] } ]\n    } ]\n}\n'
 	)
 	local ok =
 		child.lua_get(string.format([[select(1, require("codeforge.transport").receive_file(%s))]], vim.inspect(json)))
 	MiniTest.expect.equality(ok, true)
-	MiniTest.expect.equality(child.lua_get([[require("codeforge.state").get_changes()[1].id]]), "pretty-1")
+	MiniTest.expect.equality(child.lua_get([[require("codeforge.state").get_changes()[1].title]]), "pretty")
 end
 
 T["receive_file reports a missing file"] = function()
@@ -176,10 +185,10 @@ end
 
 -- ── autoload bridge (used by `nvim --remote-expr`) ─────────────────────────
 
-T["codeforge#receive returns the ack string"] = function()
+T["codeforge#receive returns a structured receipt"] = function()
 	local json = write_json()
 	local ack = child.lua_get(string.format([[vim.fn["codeforge#receive"](%s)]], vim.inspect(json)))
-	MiniTest.expect.equality(ack, "received change e2e-1 (1 file)")
+	expect_ack(ack)
 end
 
 T["codeforge#receive throws on invalid input"] = function()
@@ -204,7 +213,7 @@ T["an external nvim client delivers a change over the socket"] = function()
 		[[
                 _G.__e2e_done, _G.__e2e_res = false, nil
                 vim.system({ vim.v.progpath, "--clean", "--server", %s,
-                        "--remote-expr", "codeforge#receive('%s')" },
+                        "--remote-expr", "json_encode(codeforge#receive('%s'))" },
                         { text = true, timeout = 15000 },
                         function(r) _G.__e2e_res, _G.__e2e_done = r, true end)
                 ]],
@@ -223,12 +232,7 @@ T["an external nvim client delivers a change over the socket"] = function()
 	local code = child.lua_get([[_G.__e2e_res.code]])
 	local out = child.lua_get([[_G.__e2e_res.stdout]])
 	MiniTest.expect.equality(code, 0, { fail_reason = "remote-expr should succeed; got: " .. tostring(out) })
-	MiniTest.expect.equality(out:find("received change e2e%-1", 1, false) ~= nil, true, {
-		fail_reason = "client should see the ack; got: " .. tostring(out),
-	})
-	MiniTest.expect.equality(child.lua_get([[require("codeforge.state").get_changes()[1].id]]), "e2e-1", {
-		fail_reason = "the change should be ingested in the running instance",
-	})
+	expect_ack(vim.json.decode(out))
 end
 
 -- ── shared socket option (agent-reachable delivery) ────────────────────

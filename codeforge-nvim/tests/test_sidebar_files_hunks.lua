@@ -323,9 +323,9 @@ T["pressing o on an added file opens review without accepting or completing it"]
 	child.lua(string.format(
 		[[
 		assert(require("codeforge.transport").receive({
-			id = "added-only", title = "New file", files = { {
+			title = "New file", files = { {
 				path = %s, status = "added", hunks = { {
-					id = "add", old_start = 1, old_lines = 0,
+					old_start = 1, old_lines = 0,
 					new_start = 1, new_lines = 1, lines = { "+return 42" },
 				} },
 			} },
@@ -350,7 +350,7 @@ T["pressing o on an added file opens review without accepting or completing it"]
 			[[(function()
 		local review = require("codeforge.state").get_review(%s)
 		return review ~= nil and review.buf == vim.api.nvim_get_current_buf()
-			and review.hunk_status.add == nil
+			and review.hunk_status[review.hunks[1].id] == nil
 	end)()]],
 			vim.inspect(path)
 		)),
