@@ -389,7 +389,7 @@ function M._is_windows()
 	return vim.fn.has("win32") == 1
 end
 
----Platform appropriate default address for the RPC socket
+---Platform appropriate default address for the CodeForge JSON socket
 ---@return string
 local function default_socket_path()
 	if M._is_windows() then
@@ -401,7 +401,7 @@ local function default_socket_path()
 	return run .. "/codeforge.sock"
 end
 
----Address of the active RPC socket, or the default path when none is active.
+---Address of the active CodeForge JSON socket, or its default path.
 ---@return string
 function M.socket_path()
 	if type(M.active_socket) == "string" then
@@ -410,102 +410,69 @@ function M.socket_path()
 	return default_socket_path()
 end
 
----Resolve a group name to its gid via /etc/group
----@param name string
----@return number|nil gid
-local function gid_for_group(name)
-	local ok, lines = pcall(vim.fn.readfile, "/etc/group")
-	if not ok then
-		return nil
-	end
-	for _, line in ipairs(lines) do
-		local gname, gid = line:match("^([^:]+):[^:]*:(%d+):")
-		if gname == name then
-			return tonumber(gid)
-		end
-	end
-	return nil
-end
+local server
+local server_options
 
----@param path string
----@param opt table with optional `group` and `mode`
-local function share_socket(path, opt)
-	if M._is_windows() then
-		if opt.group ~= nil or opt.mode ~= nil then
-			vim.notify(
-				"codeforge: socket group/mode sharing is not supported on Windows named pipes",
-				vim.log.levels.WARN
-			)
-		end
-		return
-	end
-	if opt.group ~= nil then
-		local gid = gid_for_group(opt.group)
-		if gid == nil then
-			vim.notify(("codeforge: socket group %q not found"):format(tostring(opt.group)), vim.log.levels.WARN)
-		else
-			local ok2, err = pcall(vim.uv.fs_chown, path, -1, gid)
-			if not ok2 then
-				vim.notify(
-					("codeforge: could not set socket group to %q: %s"):format(tostring(opt.group), tostring(err)),
-					vim.log.levels.WARN
-				)
-			end
-		end
-	end
-	if opt.mode ~= nil then
-		local mode = tonumber(opt.mode, 8)
-		if not mode then
-			vim.notify(("codeforge: socket mode %q is not octal"):format(tostring(opt.mode)), vim.log.levels.WARN)
-		else
-			local ok3, err = pcall(vim.uv.fs_chmod, path, mode)
-			if not ok3 then
-				vim.notify(
-					("codeforge: could not set socket mode to %s: %s"):format(tostring(opt.mode), tostring(err)),
-					vim.log.levels.WARN
-				)
-			end
-		end
-	end
-end
-
----Start or stop the RPC socket to receive change-sets through
+---Start/stop the dedicated data-only socket. Native Neovim RPC is never started
+---or adopted here. Local Lua/file helpers above are NOT wire operations.
 ---@param opt boolean|string|table|nil
+---@return boolean ok
+---@return string|nil error
 function M.setup_socket(opt)
 	if opt == false then
-		if M.active_socket then
-			pcall(vim.fn.serverstop, M.active_socket)
+		if server then
+			server:stop()
 		end
-		M.active_socket = nil
-		return
+		server, server_options, M.active_socket = nil, nil, nil
+		return true
 	end
-	local path
+	local function fail(message)
+		vim.notify("codeforge: " .. message, vim.log.levels.WARN)
+		return false, message
+	end
+	local options
 	if type(opt) == "table" then
-		if type(opt.path) ~= "string" or #opt.path == 0 then
-			vim.notify("codeforge: socket table option needs a non-empty string path", vim.log.levels.WARN)
-			return
-		end
-		path = opt.path
+		options = vim.deepcopy(opt)
+	elseif type(opt) == "string" then
+		options = { path = opt }
+	elseif opt == nil or opt == true then
+		options = { path = default_socket_path() }
 	else
-		path = type(opt) == "string" and opt or default_socket_path()
+		return fail("socket must be false, true, a path, or an options table")
 	end
-	if M.active_socket == path and vim.list_contains(vim.fn.serverlist(), path) then
-		return
+	local path = options.path
+	if type(path) ~= "string" or #path == 0 or path:find("%z") then
+		return fail("socket option needs a non-empty path without NUL bytes")
 	end
-	if not vim.list_contains(vim.fn.serverlist(), path) then
-		local ok, addr = pcall(vim.fn.serverstart, path)
-		if not (ok and addr ~= "") then
-			vim.notify(
-				("codeforge: could not start RPC socket at %s (%s)"):format(path, tostring(addr)),
-				vim.log.levels.WARN
-			)
-			return
+	if not M._is_windows() then
+		path = vim.fs.normalize(vim.fn.fnamemodify(path, ":p"))
+		options.path = path
+	end
+	if server and M.active_socket == path then
+		if vim.deep_equal(options, server_options) then
+			return true
 		end
+		return fail("stop the socket before changing options at the same address")
 	end
-	M.active_socket = path
-	if type(opt) == "table" then
-		share_socket(path, opt)
+	if vim.list_contains(vim.fn.serverlist(), path) then
+		return fail("address is a native Neovim RPC endpoint; stop it or restart Neovim before migrating")
 	end
+	local started, err = require("codeforge.socket").start(path, options, M._is_windows())
+	if not started then
+		return fail(err)
+	end
+	if server then
+		server:stop()
+	end
+	server, server_options, M.active_socket = started, options, path
+	local group = vim.api.nvim_create_augroup("codeforge_socket", { clear = true })
+	vim.api.nvim_create_autocmd("VimLeavePre", {
+		group = group,
+		callback = function()
+			M.setup_socket(false)
+		end,
+	})
+	return true
 end
 
 return M
