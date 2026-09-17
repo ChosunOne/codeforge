@@ -37,11 +37,12 @@ end
 
 ---@param h table hunk
 ---@param path string file path
----@param nbase number line count of the file's base
+---@param base string[] the file's base (empty for added files)
 ---@param status string the file's status
 ---@param hunk_ids table<string, boolean>
 ---@return string|nil error
-local function validate_hunk(h, path, nbase, status, hunk_ids)
+local function validate_hunk(h, path, base, status, hunk_ids)
+	local nbase = #base
 	if type(h) ~= "table" then
 		return "hunk must be a table"
 	end
@@ -101,6 +102,15 @@ local function validate_hunk(h, path, nbase, status, hunk_ids)
 	if nplus ~= h.new_lines then
 		return ("path %s hunk %q: %d '+' lines but new_lines = %d"):format(path, h.id, nplus, h.new_lines)
 	end
+	local row = h.old_start
+	for _, line in ipairs(h.lines) do
+		if line:sub(1, 1) == "-" then
+			if line:sub(2) ~= base[row] then
+				return ("path %s: hunk %q: removed line does not match base line %d"):format(path, h.id, row)
+			end
+			row = row + 1
+		end
+	end
 end
 
 ---@param file table file entry
@@ -127,6 +137,11 @@ local function validate_file(file, hunk_ids)
 		if nbase == nil then
 			return ("path %s: base must be a list of lines"):format(path)
 		end
+		for i = 1, nbase do
+			if type(file.base[i]) ~= "string" then
+				return ("path %s: base line %d must be a string"):format(path, i)
+			end
+		end
 	end
 	local nhunks = array_len(file.hunks)
 	if not nhunks or nhunks == 0 then
@@ -135,10 +150,24 @@ local function validate_file(file, hunk_ids)
 	if file.status == "added" and nhunks ~= 1 then
 		return ("path %s: an added file takes exactly one hunk"):format(path)
 	end
+	local sorted = {}
 	for j = 1, nhunks do
-		local err = validate_hunk(file.hunks[j], path, nbase, file.status, hunk_ids)
+		local err = validate_hunk(file.hunks[j], path, file.base or {}, file.status, hunk_ids)
 		if err then
 			return err
+		end
+		sorted[j] = file.hunks[j]
+	end
+	-- Match apply_hunks' base-coordinate ordering without mutating the input.
+	-- Ranges are half-open; adjacency is valid. Shared starts (including
+	-- insertions) are ambiguous because application has no tie-break order.
+	table.sort(sorted, function(a, b)
+		return a.old_start < b.old_start
+	end)
+	for j = 2, nhunks do
+		local prev, curr = sorted[j - 1], sorted[j]
+		if curr.old_start == prev.old_start or curr.old_start < prev.old_start + prev.old_lines then
+			return ("path %s: hunks %q and %q have overlapping or ambiguous base ranges"):format(path, prev.id, curr.id)
 		end
 	end
 end

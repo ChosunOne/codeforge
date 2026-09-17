@@ -191,7 +191,11 @@ T["a second change with a different id and an overlapping path is refused"] = fu
 		c.files[1].hunks[1].id = "h2"
 		c.files[1].hunks[1].lines = { "-local b = 2", "+local b = 200" }
 	end)
-	MiniTest.expect.equality(recv(cs), false, { fail_reason = "a path already tracked by another change must be refused" })
+	MiniTest.expect.equality(
+		recv(cs),
+		false,
+		{ fail_reason = "a path already tracked by another change must be refused" }
+	)
 	MiniTest.expect.equality(last_err():find("agent-1", 1, true) ~= nil, true, {
 		fail_reason = "the error should name the owning change, got: " .. tostring(last_err()),
 	})
@@ -239,7 +243,14 @@ T["reviewing the selected change never returns another change's review"] = funct
 					status = "modified",
 					base = { "local a = 1", "local x = 2" },
 					hunks = {
-						{ id = "ha", old_start = 2, old_lines = 1, new_start = 2, new_lines = 1, lines = { "-local x = 2", "+local x = 20" } },
+						{
+							id = "ha",
+							old_start = 2,
+							old_lines = 1,
+							new_start = 2,
+							new_lines = 1,
+							lines = { "-local x = 2", "+local x = 20" },
+						},
 					},
 				},
 			},
@@ -255,7 +266,14 @@ T["reviewing the selected change never returns another change's review"] = funct
 					status = "modified",
 					base = { "local b = 1", "local y = 2" },
 					hunks = {
-						{ id = "hb", old_start = 2, old_lines = 1, new_start = 2, new_lines = 1, lines = { "-local y = 2", "+local y = 20" } },
+						{
+							id = "hb",
+							old_start = 2,
+							old_lines = 1,
+							new_start = 2,
+							new_lines = 1,
+							lines = { "-local y = 2", "+local y = 20" },
+						},
 					},
 				},
 			},
@@ -496,6 +514,160 @@ T["base as a dict rather than a line list is rejected"] = function()
 		end)),
 		false
 	)
+end
+
+-- Admission must be atomic, including a rejected replacement whose first file
+-- is valid and whose later file is malformed. Keep an unsaved target buffer so
+-- a validator cannot accidentally use (or overwrite) live content as the base.
+local function expect_rejected_unchanged(cs, message)
+	MiniTest.expect.equality(recv(valid()), true)
+	child.lua([[
+		local state = require("codeforge.state")
+		local buf = vim.fn.bufadd(vim.fn.fnamemodify("src/target.lua", ":p"))
+		vim.fn.bufload(buf)
+		vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "unsaved user edits" })
+		_G.__snapshot = function()
+			local buffers = {}
+			for _, b in ipairs(vim.api.nvim_list_bufs()) do
+				buffers[#buffers + 1] = {
+					id = b, name = vim.api.nvim_buf_get_name(b),
+					lines = vim.api.nvim_buf_get_lines(b, 0, -1, false),
+					tick = vim.api.nvim_buf_get_changedtick(b), modified = vim.bo[b].modified,
+				}
+			end
+			return vim.deepcopy({
+				changes = state.changes, reviews = state.reviews, log = state.log,
+				completed = state.completed, completed_order = state.completed_order,
+				expanded = state.expanded_files,
+				selection = { state.current_change_id, state.current_change_index },
+				buffers = buffers,
+			})
+		end
+		_G.__before = _G.__snapshot()
+		_G.__original = state.changes[1]
+		_G.__refresh = 0
+		state.set_on_change(function() _G.__refresh = _G.__refresh + 1 end)
+	]])
+	MiniTest.expect.equality(recv(cs), false)
+	MiniTest.expect.equality(last_err():find(message, 1, true) ~= nil, true, {
+		fail_reason = "expected " .. message .. "; got: " .. tostring(last_err()),
+	})
+	MiniTest.expect.equality(child.lua_get([[vim.deep_equal(_G.__before, _G.__snapshot())]]), true, {
+		fail_reason = "rejected input must leave state and all buffers unchanged",
+	})
+	MiniTest.expect.equality(child.lua_get([[require("codeforge.state").changes[1] == _G.__original]]), true)
+	MiniTest.expect.equality(child.lua_get([[_G.__refresh]]), 0)
+end
+
+for _, value in ipairs({ 42, false, { "nested" } }) do
+	T["non-string base line is rejected: " .. type(value)] = function()
+		local cs = valid(function(c)
+			-- Outside the hunk: every base line must be validated.
+			c.files[1].base[1] = value
+		end)
+		expect_rejected_unchanged(cs, "base line 1 must be a string")
+	end
+end
+
+T["removed text must match the base exactly, including whitespace"] = function()
+	local cs = valid(function(c)
+		c.files[1].hunks[1].lines[1] = "-local b = 2 "
+	end)
+	expect_rejected_unchanged(cs, 'hunk "h1": removed line does not match base line 2')
+end
+
+T["a mismatch in a later file rejects the entire replacement"] = function()
+	local cs = valid(function(c)
+		c.title = "replacement must not leak"
+		c.files[2] = vim.deepcopy(c.files[1])
+		c.files[2].path = "src/other.lua"
+		c.files[2].hunks = {
+			{
+				id = "h2",
+				old_start = 2,
+				old_lines = 2,
+				new_start = 2,
+				new_lines = 1,
+				lines = { "-local b = 2", "+replacement", "-wrong last line" },
+			},
+		}
+	end)
+	expect_rejected_unchanged(cs, 'file 2: path src/other.lua: hunk "h2": removed line does not match base line 3')
+end
+
+-- Half-open base ranges: [old_start, old_start + old_lines). Insertions
+-- consume no base lines, but shared starts are ambiguous to apply_hunks.
+local function range_hunk(id, start, count)
+	local lines = {}
+	for i = start, start + count - 1 do
+		lines[#lines + 1] = "-line " .. i
+	end
+	lines[#lines + 1] = "+replacement " .. id
+	return { id = id, old_start = start, old_lines = count, new_start = start, new_lines = 1, lines = lines }
+end
+
+local range_cases = {
+	{ "partial overlap", 1, 2, 2, 2 },
+	{ "nested range", 1, 3, 2, 1 },
+	{ "duplicate range with distinct ids", 2, 1, 2, 1 },
+	{ "insertion inside a removed range", 1, 3, 2, 0 },
+	{ "insertion at the same start as a replacement", 2, 1, 2, 0 },
+	{ "two insertions at the same position", 2, 0, 2, 0 },
+}
+for _, case in ipairs(range_cases) do
+	T["rejects " .. case[1] .. " regardless of input order"] = function()
+		for _, reverse in ipairs({ false, true }) do
+			child.lua([[require("codeforge.state").reset()]])
+			local cs = valid(function(c)
+				c.files[1].base = { "line 1", "line 2", "line 3", "line 4" }
+				local a, b = range_hunk("ha", case[2], case[3]), range_hunk("hb", case[4], case[5])
+				c.files[1].hunks = reverse and { b, a } or { a, b }
+			end)
+			expect_rejected_unchanged(cs, "overlapping or ambiguous base ranges")
+		end
+	end
+end
+
+T["adjacent ranges and an EOF insertion are accepted without reordering input"] = function()
+	local cs = valid(function(c)
+		c.files[1].base = { "line 1", "line 2", "line 3", "line 4" }
+		c.files[1].hunks = {
+			range_hunk("end", 5, 0),
+			range_hunk("right", 3, 2),
+			range_hunk("left", 1, 2),
+		}
+		c.files[1].hunks[1].new_start = 3
+		c.files[1].hunks[2].new_start = 2
+	end)
+	child.lua(string.format(
+		[[
+		local cs = %s
+		local before = vim.deepcopy(cs)
+		_G.__validation_error = require("codeforge.transport").validate(cs)
+		_G.__input_unchanged = vim.deep_equal(cs, before)
+	]],
+		vim.inspect(cs)
+	))
+	MiniTest.expect.equality(child.lua_get([[_G.__validation_error]]), vim.NIL)
+	MiniTest.expect.equality(child.lua_get([[_G.__input_unchanged]]), true)
+	MiniTest.expect.equality(recv(cs), true)
+	MiniTest.expect.equality(state_expr(".changes[1].files[1].hunks[1].id"), "end")
+end
+
+T["interleaved additions do not advance the removed-line base position"] = function()
+	local cs = valid(function(c)
+		c.files[1].hunks = {
+			{
+				id = "h1",
+				old_start = 2,
+				old_lines = 2,
+				new_start = 2,
+				new_lines = 2,
+				lines = { "+first", "-local b = 2", "+second", "-local c = 3" },
+			},
+		}
+	end)
+	MiniTest.expect.equality(recv(cs), true)
 end
 
 return T
