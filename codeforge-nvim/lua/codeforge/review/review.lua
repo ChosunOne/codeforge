@@ -264,7 +264,7 @@ function Review:render()
 			end
 		end
 
-		if p.region_mark then
+		if type(p.region_mark) == "number" then
 			p.region_row = self:_row_of(p.region_mark)
 		end
 	end
@@ -826,6 +826,26 @@ function Review:_snapshot_placements()
 	return out
 end
 
+---Keep a new file's atomic decision in sync with its sole insertion hunk.
+---Added files have exactly one hunk.
+---@param hunk_id string
+---@param status string? nil = pending
+function Review:_set_hunk_status(hunk_id, status)
+	self.hunk_status[hunk_id] = status
+	local change = state.change_for_path(self.path)
+	for _, file in ipairs(change and change.files or {}) do
+		if
+			file.path == self.path
+			and file.status == "added"
+			and #(file.hunks or {}) == 1
+			and file.hunks[1].id == hunk_id
+		then
+			file.decision = (status == "accepted" or status == "rejected") and status or nil
+			return
+		end
+	end
+end
+
 ---Restore a historical state.
 ---@param self Review
 ---@param hunk_id string
@@ -835,11 +855,7 @@ end
 function Review:apply_history_state(hunk_id, status, buffer_lines, placements)
 	vim.api.nvim_buf_set_lines(self.buf, 0, -1, false, buffer_lines)
 	self._machine_tick = vim.api.nvim_buf_get_changedtick(self.buf)
-	if status == nil then
-		self.hunk_status[hunk_id] = nil
-	else
-		self.hunk_status[hunk_id] = status
-	end
+	self:_set_hunk_status(hunk_id, status)
 	for _, p in ipairs(self.placements) do
 		local snap = placements and placements[p.hunk_id] or nil
 		if snap then
@@ -901,7 +917,7 @@ function Review:_reject_placement(p)
 		hist_before.region = vim.api.nvim_buf_get_lines(self.buf, first, last + 1, false)
 	end
 	if not first then
-		self.hunk_status[p.hunk_id] = "rejected"
+		self:_set_hunk_status(p.hunk_id, "rejected")
 		state.notify_change()
 		self:_record_triage(p, hist_before, buffer_before, placements_before, { status = "rejected" })
 		return true
@@ -909,7 +925,7 @@ function Review:_reject_placement(p)
 
 	local replacement = merge.region_in(self.base_content, self.buf_snapshot, p.region_start, p.region_count)
 	self:_apply_region(p, first, last, replacement)
-	self.hunk_status[p.hunk_id] = "rejected"
+	self:_set_hunk_status(p.hunk_id, "rejected")
 	self:render()
 	state.notify_change()
 	self:_record_triage(p, hist_before, buffer_before, placements_before, { status = "rejected", region = replacement })
@@ -936,7 +952,7 @@ function Review:_accept_placement(p)
 		hist_before.region = vim.api.nvim_buf_get_lines(self.buf, first, last + 1, false)
 	end
 	if not first then
-		self.hunk_status[p.hunk_id] = "accepted"
+		self:_set_hunk_status(p.hunk_id, "accepted")
 		state.notify_change()
 		self:_record_triage(p, hist_before, buffer_before, placements_before, { status = "accepted" })
 		return true
@@ -947,13 +963,13 @@ function Review:_accept_placement(p)
 	local cur = vim.api.nvim_buf_get_lines(self.buf, first, last + 1, false)
 	local res = merge.merge3(ours, base, cur)
 	if res.conflict then
-		self.hunk_status[p.hunk_id] = "conflicted"
+		self:_set_hunk_status(p.hunk_id, "conflicted")
 		state.notify_change()
 		self:_record_triage(p, hist_before, buffer_before, placements_before, { status = "conflicted" })
 		return true
 	end
 	self:_apply_region(p, first, last, res.lines)
-	self.hunk_status[p.hunk_id] = "accepted"
+	self:_set_hunk_status(p.hunk_id, "accepted")
 	self:render()
 	state.notify_change()
 	self:_record_triage(p, hist_before, buffer_before, placements_before, { status = "accepted", region = res.lines })
@@ -1237,7 +1253,7 @@ function Review:confirm_resolve()
 		end
 		hist_before.region = vim.api.nvim_buf_get_lines(self.buf, r.first, r.last + 1, false)
 		self:_apply_region(p, r.first, r.last, region)
-		self.hunk_status[r.hunk_id] = "accepted"
+		self:_set_hunk_status(r.hunk_id, "accepted")
 		self:render()
 		state.notify_change()
 		self:_record_triage(p, hist_before, buffer_before, placements_before, { status = "accepted", region = region })
@@ -1384,6 +1400,15 @@ end
 ---@param self Review
 function Review:open()
 	self.buf_snapshot = vim.api.nvim_buf_get_lines(self.buf, 0, -1, false)
+	if
+		#self.base_content == 0
+		and #self.buf_snapshot == 1
+		and self.buf_snapshot[1] == ""
+		and not vim.bo[self.buf].modified
+		and vim.fn.filereadable(self.path) == 0
+	then
+		self.buf_snapshot = {}
+	end
 	if vim.bo[self.buf].filetype == "" then
 		local ft = vim.filetype.match({ filename = self.path })
 		if ft then
