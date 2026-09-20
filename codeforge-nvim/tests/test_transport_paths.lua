@@ -189,4 +189,117 @@ T["a symlinked working directory still admits its own relative files"] = functio
 	MiniTest.expect.equality(reply.result.files[1].path, root .. "/new.lua")
 end
 
+local function modified_file(path)
+	return {
+		path = path,
+		status = "modified",
+		base = { "original" },
+		hunks = { { old_start = 1, old_lines = 1, new_start = 1, new_lines = 1, lines = { "-original", "+proposal" } } },
+	}
+end
+
+local function publish_files(files)
+	return child.lua_get(
+		string.format(
+			[[require("codeforge.protocol").handle(%q)]],
+			vim.json.encode({ op = "publish", proposal = { files = files } })
+		)
+	)
+end
+
+T["a missing modified file rejects a mixed batch without admitting earlier files or allocating IDs"] = function()
+	local before = receive({ "already-pending.lua" })
+	MiniTest.expect.equality(before.ok, true)
+	child.lua([[
+		local state = require("codeforge.state")
+		before_changes = vim.deepcopy(state.changes)
+		before_buffers = vim.api.nvim_list_bufs()
+		state.set_on_change(function() error("invalid batch must not refresh") end)
+		-- Force a fresh identity prefix so an allocation attempt cannot hide in a cache.
+		package.loaded["codeforge.transport"] = nil
+		vim.uv.random = function() error("invalid batch must not allocate IDs") end
+	]])
+	local reply = publish_files({ proposal({ "valid-new.lua" }).files[1], modified_file("missing.lua") })
+	MiniTest.expect.equality(reply.ok, false)
+	MiniTest.expect.equality(reply.error.code, "invalid_proposal")
+	MiniTest.expect.equality(reply.error.message:find("missing.lua", 1, true) ~= nil, true)
+	MiniTest.expect.equality(reply.error.message:find("must already exist", 1, true) ~= nil, true)
+	MiniTest.expect.equality(
+		child.lua_get([[vim.deep_equal(before_changes, require("codeforge.state").changes)]]),
+		true
+	)
+	MiniTest.expect.equality(child.lua_get([[vim.deep_equal(before_buffers, vim.api.nvim_list_bufs())]]), true)
+	MiniTest.expect.equality(child.lua_get([[#require("codeforge.state").log]]), 0)
+	MiniTest.expect.equality(child.fn.filereadable(root .. "/valid-new.lua"), 0)
+	MiniTest.expect.equality(child.fn.filereadable(root .. "/missing.lua"), 0)
+end
+
+T["modified targets under missing directories are not implicitly treated as added files"] = function()
+	local reply = publish_files({ modified_file(root .. "/missing/deep/file.lua") })
+	MiniTest.expect.equality(reply.ok, false)
+	MiniTest.expect.equality(reply.error.code, "invalid_proposal")
+	MiniTest.expect.equality(child.fn.isdirectory(root .. "/missing"), 0)
+end
+
+T["an existing directory is not a valid modification target"] = function()
+	child.fn.mkdir(root .. "/directory", "p")
+	local reply = publish_files({ modified_file("directory") })
+	MiniTest.expect.equality(reply.ok, false)
+	MiniTest.expect.equality(reply.error.code, "invalid_proposal")
+	MiniTest.expect.equality(reply.error.message:find("regular file", 1, true) ~= nil, true)
+end
+
+T["an unsaved buffer alone does not make a modified file exist on disk"] = function()
+	child.cmd("edit " .. root .. "/unsaved.lua")
+	child.api.nvim_buf_set_lines(0, 0, -1, false, { "unsaved user content" })
+	local reply = publish_files({ modified_file("unsaved.lua") })
+	MiniTest.expect.equality(reply.ok, false)
+	MiniTest.expect.equality(reply.error.code, "invalid_proposal")
+	MiniTest.expect.equality(child.api.nvim_buf_get_lines(0, 0, -1, false), { "unsaved user content" })
+	MiniTest.expect.equality(child.fn.filereadable(root .. "/unsaved.lua"), 0)
+end
+
+T["existing files need not match the supplied base and are not loaded or overwritten on admission"] = function()
+	child.fn.writefile({ "user's disk edits" }, root .. "/existing.lua")
+	local buffers = child.api.nvim_list_bufs()
+	local reply = publish_files({ modified_file("existing.lua") })
+	MiniTest.expect.equality(reply.ok, true)
+	MiniTest.expect.equality(child.api.nvim_list_bufs(), buffers)
+	MiniTest.expect.equality(child.fn.readfile(root .. "/existing.lua"), { "user's disk edits" })
+	MiniTest.expect.equality(child.lua_get([[require("codeforge.state").changes[1].files[1].base]]), { "original" })
+end
+
+T["an existing empty file can be modified by an insertion"] = function()
+	child.fn.writefile({}, root .. "/empty.lua")
+	local file = proposal({ "empty.lua" }).files[1]
+	file.status, file.base = "modified", {}
+	local reply = publish_files({ file })
+	MiniTest.expect.equality(reply.ok, true)
+	MiniTest.expect.equality(child.fn.getfsize(root .. "/empty.lua"), 0)
+end
+
+T["an in-root symlink to an existing regular file remains a valid modification target"] = function()
+	child.fn.writefile({ "original" }, root .. "/existing.lua")
+	symlink(root .. "/existing.lua", root .. "/alias.lua")
+	local reply = publish_files({ modified_file("alias.lua") })
+	MiniTest.expect.equality(reply.ok, true)
+	MiniTest.expect.equality(reply.result.files[1].path, root .. "/existing.lua")
+end
+
+T["failure to stat a modified target fails closed rather than assuming it exists"] = function()
+	child.fn.writefile({ "original" }, root .. "/unverifiable.lua")
+	child.lua([[
+		local stat = vim.uv.fs_stat
+		vim.uv.fs_stat = function(path)
+			if path:match("/unverifiable.lua$") then
+				return nil, "permission denied", "EACCES"
+			end
+			return stat(path)
+		end
+	]])
+	local reply = publish_files({ modified_file("unverifiable.lua") })
+	MiniTest.expect.equality(reply.ok, false)
+	MiniTest.expect.equality(reply.error.code, "invalid_proposal")
+end
+
 return T

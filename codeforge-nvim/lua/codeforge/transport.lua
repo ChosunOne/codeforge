@@ -328,6 +328,13 @@ function M.receive(cs)
 		if not within(path, root) then
 			return false, ("path %q resolves outside Neovim working directory %q"):format(file.path, cwd)
 		end
+		if file.status == "modified" then
+			local stat = vim.uv.fs_stat(path)
+			if not stat or stat.type ~= "file" then
+				return false,
+					("path %q: modified target must already exist as a regular file on disk"):format(file.path)
+			end
+		end
 		paths[i] = path
 		incoming[path] = file.path
 	end

@@ -632,4 +632,45 @@ T["publish rejects a foreign checkout atomically and accepts editor-relative pat
 	MiniTest.expect.equality(reply.result.files[1].path, root .. "/nested/new.lua")
 end
 
+T["a missing modification is refused on the wire until the receiving file exists"] = function()
+	start()
+	local root = child.fn.fnamemodify(sock, ":h")
+	child.api.nvim_set_current_dir(root)
+	local p = {
+		files = {
+			{
+				path = "missing.lua",
+				status = "modified",
+				base = { "original" },
+				hunks = {
+					{
+						old_start = 1,
+						old_lines = 1,
+						new_start = 1,
+						new_lines = 1,
+						lines = { "-original", "+proposal" },
+					},
+				},
+			},
+		},
+	}
+	local c = connect()
+	send(c, request(p))
+	local reply = response(c)
+	MiniTest.expect.equality(reply.ok, false)
+	MiniTest.expect.equality(reply.error.code, "invalid_proposal")
+	MiniTest.expect.equality(reply.error.message:find("must already exist", 1, true) ~= nil, true)
+	MiniTest.expect.equality(child.fn.filereadable(root .. "/missing.lua"), 0)
+	unchanged()
+
+	child.fn.writefile({ "original" }, root .. "/missing.lua")
+	c = connect()
+	send(c, request(p))
+	reply = response(c)
+	MiniTest.expect.equality(reply.ok, true)
+	MiniTest.expect.equality(reply.result.files[1].path, root .. "/missing.lua")
+	MiniTest.expect.equality(child.fn.readfile(root .. "/missing.lua"), { "original" })
+	MiniTest.expect.equality(child.lua_get([[#require("codeforge.state").changes]]), 1)
+end
+
 return T

@@ -7,11 +7,17 @@ local MiniTest = require("mini.test")
 local child = MiniTest.new_child_neovim()
 local F = require("fixtures")
 F.set_child(child)
+local project_dir, original_cwd
 
 local T = MiniTest.new_set({
 	hooks = {
 		pre_case = function()
 			child.restart({ "-u", "tests/init.lua" })
+			original_cwd = child.fn.getcwd()
+			project_dir = F.tmp_path("_project")
+			child.fn.mkdir(project_dir, "p")
+			child.api.nvim_set_current_dir(project_dir)
+			child.fn.writefile({ "a", "b" }, "identity-a.lua")
 			child.lua([[
 				require("codeforge.state").reset()
 				_G.proposal = {
@@ -27,7 +33,11 @@ local T = MiniTest.new_set({
 				}
 			]])
 		end,
-		post_case = F.cleanup,
+		post_case = function()
+			child.api.nvim_set_current_dir(original_cwd)
+			child.fn.delete(project_dir, "rf")
+			F.cleanup()
+		end,
 		post_once = child.stop,
 	},
 })
@@ -147,6 +157,7 @@ for _, retained in ipairs({ "pending", "completed", "log" }) do
 				end
 			end
 			for _, file in ipairs(proposal.files) do file.path = "next-" .. file.path end
+			vim.fn.writefile(proposal.files[1].base, proposal.files[1].path)
 			package.loaded["codeforge.transport"] = nil
 			local second
 			ok, second = require("codeforge.transport").receive(proposal)

@@ -7,6 +7,7 @@ local MiniTest = require("mini.test")
 local child = MiniTest.new_child_neovim()
 local F = require("fixtures") ---@type Fixtures
 F.set_child(child)
+local project_dir, original_cwd
 
 ---Build a valid one-file modified change-set; `mut` may mutate it.
 local function valid(mut)
@@ -65,9 +66,20 @@ local T = MiniTest.new_set({
 	hooks = {
 		pre_case = function()
 			child.restart({ "-u", "tests/init.lua" })
+			original_cwd = child.fn.getcwd()
+			project_dir = F.tmp_path("_project")
+			child.fn.mkdir(project_dir .. "/src", "p")
+			child.api.nvim_set_current_dir(project_dir)
+			for _, name in ipairs({ "target.lua", "other.lua" }) do
+				child.fn.writefile(valid().files[1].base, project_dir .. "/src/" .. name)
+			end
 			child.lua([[require("codeforge.state").reset()]])
 		end,
-		post_case = F.cleanup,
+		post_case = function()
+			child.api.nvim_set_current_dir(original_cwd)
+			child.fn.delete(project_dir, "rf")
+			F.cleanup()
+		end,
 		post_once = child.stop,
 	},
 })
@@ -233,6 +245,8 @@ end
 T["reviewing the selected change never returns another change's review"] = function()
 	local path_a = "src/a.lua"
 	local path_b = "src/b.lua"
+	child.fn.writefile({ "local a = 1", "local x = 2" }, path_a)
+	child.fn.writefile({ "local b = 1", "local y = 2" }, path_b)
 	MiniTest.expect.equality(
 		recv({
 			files = {

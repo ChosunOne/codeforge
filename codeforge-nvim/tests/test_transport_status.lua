@@ -34,8 +34,11 @@ local function status(id)
 end
 
 local function publish(path)
-	path = path or F.tmp_path()
 	local base = { "a", "b", "c", "d", "e" }
+	if not path then
+		path = F.tmp_path()
+		child.fn.writefile(base, path)
+	end
 	local hunks = { F.replace_hunk("h1", 2, "b", "B"), F.replace_hunk("h2", 4, "d", "D") }
 	for _, hunk in ipairs(hunks) do
 		hunk.id, hunk.status, hunk.header = nil, nil, nil
@@ -142,8 +145,7 @@ T["status validates its own allowlist and never accepts mutation or file-access 
 end
 
 local function open_proposal()
-	local ack, path, base = publish()
-	child.fn.writefile(base, path)
+	local ack, path = publish()
 	child.lua(string.format([[require("codeforge.review.buffer").open(%q)]], path))
 	return ack, path
 end
