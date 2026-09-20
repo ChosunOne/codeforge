@@ -119,8 +119,8 @@ local function validate_file(file)
 	if file.id ~= nil then
 		return "file id is assigned by Neovim; omit it from publish requests"
 	end
-	if type(file.path) ~= "string" or #file.path == 0 then
-		return "file needs a non-empty string path"
+	if type(file.path) ~= "string" or #file.path == 0 or file.path:find("%z") then
+		return "file needs a non-empty string path without NUL bytes"
 	end
 	local path = file.path
 	if not VALID_STATUS[file.status] then
@@ -259,6 +259,42 @@ local function next_change_id(state)
 	return id
 end
 
+---Strict descendant check: a shared string prefix is not containment.
+local function within(path, root)
+	if M._is_windows() then
+		path, root = path:lower(), root:lower()
+	end
+	local prefix = root:gsub("/+$", "") .. "/"
+	return #path > #prefix and path:sub(1, #prefix) == prefix
+end
+
+---Resolve existing symlinks, including ancestors of a not-yet-created file.
+---Only ENOENT is a missing component; dangling links, loops and inaccessible
+---paths must fail closed rather than silently falling back to lexical paths.
+local function canonical_path(path)
+	local probe, missing = path, {}
+	while true do
+		local resolved, _, code = vim.uv.fs_realpath(probe)
+		if resolved then
+			local suffix = #missing > 0 and "/" .. table.concat(missing, "/") or ""
+			return vim.fs.normalize(resolved .. suffix)
+		end
+		if code ~= "ENOENT" then
+			return nil
+		end
+		local st, _, stat_code = vim.uv.fs_lstat(probe)
+		if st or stat_code ~= "ENOENT" then
+			return nil
+		end
+		local parent = vim.fs.dirname(probe)
+		if not parent or parent == probe then
+			return nil
+		end
+		table.insert(missing, 1, vim.fs.basename(probe))
+		probe = parent
+	end
+end
+
 ---Publish a new change into `state.changes`; never replace an existing change.
 ---@param cs table publish request without change/file/hunk ids
 ---@return boolean ok
@@ -272,9 +308,28 @@ function M.receive(cs)
 
 	-- `state.reviews` is keyed by path: a second pending change must not claim
 	-- the same file. Publishing is create-only, even when retrying a request.
-	local incoming = {}
-	for _, file in ipairs(cs.files) do
-		incoming[vim.fs.normalize(vim.fn.fnamemodify(file.path, ":p"))] = file.path
+	local cwd = vim.fs.normalize(vim.fn.getcwd())
+	local root = vim.uv.fs_realpath(cwd)
+	if not root then
+		return false, "cannot resolve Neovim working directory for file paths"
+	end
+	root = vim.fs.normalize(root)
+	local incoming, paths = {}, {}
+	for i, file in ipairs(cs.files) do
+		local path = vim.fs.normalize(vim.fn.fnamemodify(file.path, ":p"))
+		if not within(path, cwd) then
+			return false, ("path %q is outside Neovim working directory %q"):format(file.path, cwd)
+		end
+		path = canonical_path(path)
+		if not path then
+			return false,
+				("path %q cannot be safely resolved within Neovim working directory %q"):format(file.path, cwd)
+		end
+		if not within(path, root) then
+			return false, ("path %q resolves outside Neovim working directory %q"):format(file.path, cwd)
+		end
+		paths[i] = path
+		incoming[path] = file.path
 	end
 	for _, change in ipairs(state.changes) do
 		for _, file in ipairs(change.files or {}) do
@@ -295,8 +350,8 @@ function M.receive(cs)
 	-- Resolve project-relative paths against the editor's cwd and derive
 	-- display status; sender-supplied values for both are ignored.
 	local seen = {}
-	for _, file in ipairs(change.files) do
-		file.path = vim.fs.normalize(vim.fn.fnamemodify(file.path, ":p"))
+	for i, file in ipairs(change.files) do
+		file.path = paths[i]
 		if seen[file.path] then
 			return false, ("duplicate file path %q"):format(file.path)
 		end

@@ -320,6 +320,7 @@ end
 
 T["pressing o on an added file opens review without accepting or completing it"] = function()
 	local path = child.fn.tempname() .. ".lua"
+	child.api.nvim_set_current_dir(child.fn.fnamemodify(path, ":h"))
 	child.lua(string.format(
 		[[
 		assert(require("codeforge.transport").receive({

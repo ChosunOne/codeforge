@@ -230,6 +230,39 @@ function M.build_log_entry(change)
 	return entry
 end
 
+---Read-only, detached outcome snapshot for a change in this editor session.
+---`under_review` tracks lifecycle membership, not whether a buffer is open or
+---all hunks are triaged.
+---@param id string
+---@return table|nil
+function M.get_change_status(id)
+	local idx = change_index(id)
+	-- Live membership wins after undo/reopen. Never re-derive completed
+	-- outcomes through M.reviews: another change may now own those paths.
+	local completed = M.completed[id]
+	local entry = idx and M.build_log_entry(M.changes[idx]) or completed and completed.entry
+	if not entry then
+		return nil
+	end
+	local result = {
+		id = entry.id,
+		status = entry.status,
+		under_review = idx ~= nil,
+		files = vim.deepcopy(entry.files),
+	}
+	for _, file in ipairs(result.files) do
+		if file.status == "added" or file.status == "deleted" then
+			file.decision = file.decision or "pending"
+		else
+			file.modified = file.modified == true
+			for _, hunk in ipairs(file.hunks) do
+				hunk.status = hunk.status or "pending"
+			end
+		end
+	end
+	return result
+end
+
 ---Append an entry to the in-memory decision log (and the on-disk log file).
 ---@param entry table
 function M.append_log(entry)

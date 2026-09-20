@@ -90,8 +90,13 @@ local function wire_proposal_error(proposal)
 	end
 end
 
+local request_fields = {
+	publish = { op = true, proposal = true },
+	status = { op = true, id = true },
+}
+
 ---One bounded JSON frame, called on Neovim's main loop by socket.lua.
----The only remotely available action is publishing a proposal into memory.
+---Publish admits a proposal into memory; status only reads review outcomes.
 function M.handle(frame)
 	if not frame:match("^%s*{") or not shallow_enough(frame) then
 		return M.error("invalid_request", "expected a JSON object with nesting at most 64")
@@ -100,15 +105,26 @@ function M.handle(frame)
 	if not decoded then
 		return M.error("invalid_request", "invalid JSON")
 	end
-	local err = keys_allowed(request, { op = true, proposal = true }, "request")
-	if err then
-		return M.error("invalid_request", err)
-	end
 	if type(request.op) ~= "string" then
 		return M.error("invalid_request", "op must be a string")
 	end
-	if request.op ~= "publish" then
-		return M.error("unknown_operation", "only publish is supported")
+	local allowed = request_fields[request.op]
+	if not allowed then
+		return M.error("unknown_operation", "only publish and status are supported")
+	end
+	local err = keys_allowed(request, allowed, "request")
+	if err then
+		return M.error("invalid_request", err)
+	end
+	if request.op == "status" then
+		if type(request.id) ~= "string" or #request.id == 0 or #request.id > 256 or request.id:find("%z") then
+			return M.error("invalid_request", "id must be a non-empty string of at most 256 bytes without NUL bytes")
+		end
+		local result = require("codeforge.state").get_change_status(request.id)
+		if not result then
+			return M.error("not_found", "change not found in this editor session")
+		end
+		return { ok = true, result = result }
 	end
 	err = wire_proposal_error(request.proposal)
 	if err then

@@ -221,13 +221,15 @@ T["malformed later file rejects the entire request"] = function()
 		path = "bad.lua",
 		status = "modified",
 		base = { "original" },
-		hunks = { {
-			old_start = 1,
-			old_lines = 1,
-			new_start = 1,
-			new_lines = 1,
-			lines = { "-wrong", "+new" },
-		} },
+		hunks = {
+			{
+				old_start = 1,
+				old_lines = 1,
+				new_start = 1,
+				new_lines = 1,
+				lines = { "-wrong", "+new" },
+			},
+		},
 	}
 	local c = connect()
 	send(c, request(p))
@@ -524,6 +526,110 @@ T["brackets and escaped quotes inside strings do not count as JSON nesting"] = f
 	send(c, request(p))
 	MiniTest.expect.equality(response(c).ok, true)
 	MiniTest.expect.equality(child.lua_get([[require("codeforge.state").changes[1].title]]), p.title)
+end
+
+T["status over the socket reports pending and completed outcomes without exposing file content"] = function()
+	start()
+	local path = F.tmp_path()
+	child.api.nvim_set_current_dir(child.fn.fnamemodify(path, ":h"))
+	child.fn.writefile({ "original" }, path)
+	child.lua([[require("codeforge.state").log_file = nil]])
+	local p = {
+		files = {
+			{
+				path = path,
+				status = "modified",
+				base = { "original" },
+				hunks = {
+					{
+						old_start = 1,
+						old_lines = 1,
+						new_start = 1,
+						new_lines = 1,
+						lines = { "-original", "+proposal" },
+					},
+				},
+			},
+		},
+	}
+	local c = connect()
+	send(c, request(p))
+	local ack = response(c).result
+
+	for _, outcome in ipairs({ "pending", "rejected" }) do
+		if outcome == "rejected" then
+			child.lua(string.format(
+				[[
+				require("codeforge.review.buffer").open(%q)
+				require("codeforge.state").get_review(%q):reject_hunk(0)
+			]],
+				path,
+				path
+			))
+		end
+		c = connect()
+		send(c, vim.json.encode({ op = "status", id = ack.id }) .. "\n")
+		MiniTest.expect.equality(response(c), {
+			ok = true,
+			result = {
+				id = ack.id,
+				status = outcome,
+				under_review = outcome == "pending",
+				files = {
+					{
+						path = path,
+						status = "modified",
+						modified = false,
+						hunks = { { id = ack.files[1].hunks[1].id, status = outcome } },
+					},
+				},
+			},
+		})
+	end
+	MiniTest.expect.equality(child.fn.readfile(path), { "original" })
+end
+
+T["bad status requests are isolated and cannot publish or invoke Neovim operations"] = function()
+	start()
+	for _, value in ipairs({
+		{ op = "status", id = "unknown", expected = "not_found" },
+		{ op = "status", id = {}, expected = "invalid_request" },
+		{ op = "status", id = "unknown", proposal = proposal(), expected = "invalid_request" },
+		{ op = "status", id = "unknown", lua = "vim.g.codeforge_execution_probe=true", expected = "invalid_request" },
+	}) do
+		local expected = value.expected
+		value.expected = nil
+		local c = connect()
+		send(c, vim.json.encode(value) .. "\n")
+		local reply = response(c)
+		MiniTest.expect.equality(reply.ok, false)
+		MiniTest.expect.equality(reply.error.code, expected)
+		unchanged()
+	end
+	local good = connect()
+	send(good, request())
+	MiniTest.expect.equality(response(good).ok, true)
+end
+
+T["publish rejects a foreign checkout atomically and accepts editor-relative paths afterwards"] = function()
+	start()
+	local foreign = child.fn.getcwd() .. "/foreign.lua"
+	local root = child.fn.fnamemodify(sock, ":h")
+	child.api.nvim_set_current_dir(root)
+	local p = proposal("valid.lua")
+	p.files[2] = proposal(foreign).files[1]
+	local c = connect()
+	send(c, request(p))
+	local reply = response(c)
+	MiniTest.expect.equality(reply.ok, false)
+	MiniTest.expect.equality(reply.error.code, "invalid_proposal")
+	MiniTest.expect.equality(reply.error.message:find("outside Neovim working directory", 1, true) ~= nil, true)
+	unchanged()
+	c = connect()
+	send(c, request(proposal("nested/new.lua")))
+	reply = response(c)
+	MiniTest.expect.equality(reply.ok, true)
+	MiniTest.expect.equality(reply.result.files[1].path, root .. "/nested/new.lua")
 end
 
 return T
