@@ -673,4 +673,55 @@ T["a missing modification is refused on the wire until the receiving file exists
 	MiniTest.expect.equality(child.lua_get([[#require("codeforge.state").changes]]), 1)
 end
 
+T["info over the socket reports the resolved cwd a client must publish against"] = function()
+	start()
+	-- Reach the project through a symlink, so the reply can be checked for a
+	-- *normalized, resolved* directory rather than whatever string was chdir'd
+	-- to. Neovim's getcwd() already resolves symlinks; `info` must keep that
+	-- property, since publish's containment check compares resolved paths.
+	local real = child.fn.fnamemodify(sock, ":h")
+	local link = child.fn.tempname() .. "_link"
+	child.fn.system({ "ln", "-sfn", real, link })
+	child.api.nvim_set_current_dir(link)
+
+	local c = connect()
+	send(c, vim.json.encode({ op = "info" }) .. "\n")
+	local reply = response(c)
+	MiniTest.expect.equality(reply.ok, true)
+	MiniTest.expect.equality(reply.result.cwd, child.fn.fnamemodify(real, ":p"):gsub("/$", ""))
+	MiniTest.expect.equality(reply.result.cwd:find("_link", 1, true) == nil, true, {
+		fail_reason = "the reported cwd must be resolved, not the symlink used to enter it",
+	})
+	-- The reported cwd is exactly the containment root publish enforces: a
+	-- path built from it is admitted.
+	local p = proposal(reply.result.cwd .. "/nested/info-target.lua")
+	local pub = connect()
+	send(pub, request(p))
+	local acked = response(pub)
+	MiniTest.expect.equality(acked.ok, true)
+	MiniTest.expect.equality(acked.result.files[1].path, reply.result.cwd .. "/nested/info-target.lua")
+end
+
+T["info over the socket names the live socket address"] = function()
+	start()
+	local c = connect()
+	send(c, vim.json.encode({ op = "info" }) .. "\n")
+	MiniTest.expect.equality(response(c).result.socket, sock)
+end
+
+T["hunk descriptions travel over the socket and are renderable"] = function()
+	start()
+	local root = child.fn.fnamemodify(sock, ":h")
+	child.api.nvim_set_current_dir(root)
+	local p = proposal("described.lua")
+	p.files[1].hunks[1].description = "Return a greeting"
+	local c = connect()
+	send(c, request(p))
+	MiniTest.expect.equality(response(c).ok, true)
+	MiniTest.expect.equality(
+		child.lua_get([=[require("codeforge.state").changes[1].files[1].hunks[1].description]=]),
+		"Return a greeting"
+	)
+end
+
 return T

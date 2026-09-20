@@ -46,7 +46,14 @@ end
 
 local proposal_fields = { title = true, files = true }
 local file_fields = { path = true, status = true, base = true, hunks = true }
-local hunk_fields = { old_start = true, old_lines = true, new_start = true, new_lines = true, lines = true }
+local hunk_fields = {
+	old_start = true,
+	old_lines = true,
+	new_start = true,
+	new_lines = true,
+	lines = true,
+	description = true,
+}
 
 local function wire_proposal_error(proposal)
 	local err = keys_allowed(proposal, proposal_fields, "proposal")
@@ -93,6 +100,7 @@ end
 local request_fields = {
 	publish = { op = true, proposal = true },
 	status = { op = true, id = true },
+	info = { op = true },
 }
 
 ---One bounded JSON frame, called on Neovim's main loop by socket.lua.
@@ -110,11 +118,14 @@ function M.handle(frame)
 	end
 	local allowed = request_fields[request.op]
 	if not allowed then
-		return M.error("unknown_operation", "only publish and status are supported")
+		return M.error("unknown_operation", "only publish, status and info are supported")
 	end
 	local err = keys_allowed(request, allowed, "request")
 	if err then
 		return M.error("invalid_request", err)
+	end
+	if request.op == "info" then
+		return { ok = true, result = require("codeforge.transport").info() }
 	end
 	if request.op == "status" then
 		if type(request.id) ~= "string" or #request.id == 0 or #request.id > 256 or request.id:find("%z") then

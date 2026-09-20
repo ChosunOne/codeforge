@@ -35,6 +35,29 @@ local function is_int(v)
 	return type(v) == "number" and math.floor(v) == v
 end
 
+---Display metadata an agent may attach to a hunk.
+local MAX_DESCRIPTION_BYTES = 4096
+
+---@param description any
+---@return string|nil error
+local function validate_description(description)
+	if type(description) ~= "string" then
+		return "description must be a string"
+	end
+	if #description == 0 then
+		return "description must not be empty"
+	end
+	if #description > MAX_DESCRIPTION_BYTES then
+		return ("description must be at most %d bytes"):format(MAX_DESCRIPTION_BYTES)
+	end
+	-- A single sidebar row: control characters (newlines, tabs, NUL, escapes)
+	-- would either break rendering or smuggle terminal sequences.
+	if description:find("[%z\1-\31\127]") then
+		return "description must not contain control characters"
+	end
+	return nil
+end
+
 ---@param h table hunk
 ---@param path string file path
 ---@param base string[] the file's base (empty for added files)
@@ -49,6 +72,12 @@ local function validate_hunk(h, path, base, status, index)
 	end
 	if h.id ~= nil then
 		return context .. "id is assigned by Neovim; omit it from publish requests"
+	end
+	if h.description ~= nil then
+		local derr = validate_description(h.description)
+		if derr then
+			return context .. derr
+		end
 	end
 	for _, key in ipairs({ "old_start", "old_lines", "new_start", "new_lines" }) do
 		if not is_int(h[key]) then
@@ -470,6 +499,18 @@ function M.socket_path()
 		return M.active_socket
 	end
 	return default_socket_path()
+end
+
+---Read-only description of the receiving editor for wire clients.
+---@return table
+function M.info()
+	local cwd = vim.fs.normalize(vim.fn.getcwd())
+	local resolved = vim.uv.fs_realpath(cwd)
+	return {
+		cwd = resolved and vim.fs.normalize(resolved) or cwd,
+		socket = M.socket_path(),
+		changes = #require("codeforge.state").changes,
+	}
 end
 
 local server
