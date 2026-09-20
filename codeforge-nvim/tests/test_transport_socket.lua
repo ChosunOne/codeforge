@@ -724,4 +724,98 @@ T["hunk descriptions travel over the socket and are renderable"] = function()
 	)
 end
 
+T["list and durable status work over the socket"] = function()
+	start()
+	local root = child.fn.fnamemodify(sock, ":h")
+	child.api.nvim_set_current_dir(root)
+	local log_path = root .. "/cf-wire-log.json"
+	child.lua(string.format([[require("codeforge.state").log_file = %q]], log_path))
+
+	-- Publish, then resolve it through the real review machinery so the
+	-- decision log is written the way production does it.
+	local p = {
+		files = {
+			{
+				path = "listed.lua",
+				status = "modified",
+				base = { "original" },
+				hunks = {
+					{
+						old_start = 1,
+						old_lines = 1,
+						new_start = 1,
+						new_lines = 1,
+						lines = { "-original", "+proposal" },
+						description = "Replace original with proposal",
+					},
+				},
+			},
+		},
+	}
+	child.fn.writefile({ "original" }, root .. "/listed.lua")
+	local c = connect()
+	send(c, request(p))
+	local ack = response(c).result
+
+	-- While tracked, `list` reports it as under review.
+	c = connect()
+	send(c, vim.json.encode({ op = "list" }) .. "\n")
+	local listed = response(c).result
+	MiniTest.expect.equality(listed.total, 1)
+	MiniTest.expect.equality(listed.changes[1].id, ack.id)
+	MiniTest.expect.equality(listed.changes[1].under_review, true)
+	MiniTest.expect.equality(listed.changes[1].status, "pending")
+
+	child.lua(string.format([[require("codeforge.review.buffer").open(%q)]], root .. "/listed.lua"))
+	child.lua(string.format([[require("codeforge.state").get_review(%q):reject_hunk(0)]], root .. "/listed.lua"))
+	MiniTest.expect.equality(child.lua_get([[#require("codeforge.state").changes]]), 0)
+
+	-- Completed: status is still answerable, and is answerable *only* from disk
+	-- once the session forgets the change entirely.
+	c = connect()
+	send(c, vim.json.encode({ op = "status", id = ack.id }) .. "\n")
+	MiniTest.expect.equality(response(c).result.status, "rejected")
+
+	child.lua([[require("codeforge.state").reset()]])
+	child.lua(string.format([[require("codeforge.state").log_file = %q]], log_path))
+	c = connect()
+	send(c, vim.json.encode({ op = "status", id = ack.id }) .. "\n")
+	local after = response(c)
+	MiniTest.expect.equality(after.ok, true, { fail_reason = "a restart must not lose the outcome" })
+	MiniTest.expect.equality(after.result.status, "rejected")
+	MiniTest.expect.equality(after.result.under_review, false)
+
+	-- And `list` finds it again, from the persisted log alone.
+	c = connect()
+	send(c, vim.json.encode({ op = "list" }) .. "\n")
+	local restored = response(c).result
+	MiniTest.expect.equality(restored.total, 1)
+	MiniTest.expect.equality(restored.changes[1].id, ack.id)
+	MiniTest.expect.equality(restored.changes[1].status, "rejected")
+	MiniTest.expect.equality(restored.changes[1].under_review, false)
+end
+
+T["bad list requests are isolated and cannot mutate anything"] = function()
+	start()
+	for _, value in ipairs({
+		{ op = "list", limit = 0, expected = "invalid_request" },
+		{ op = "list", limit = 101, expected = "invalid_request" },
+		{ op = "list", cursor = "bogus", expected = "invalid_request" },
+		{ op = "list", proposal = proposal(), expected = "invalid_request" },
+		{ op = "list", lua = "vim.g.codeforge_execution_probe = true", expected = "invalid_request" },
+	}) do
+		local expected = value.expected
+		value.expected = nil
+		local c = connect()
+		send(c, vim.json.encode(value) .. "\n")
+		local reply = response(c)
+		MiniTest.expect.equality(reply.ok, false)
+		MiniTest.expect.equality(reply.error.code, expected)
+		unchanged()
+	end
+	local good = connect()
+	send(good, request())
+	MiniTest.expect.equality(response(good).ok, true)
+end
+
 return T

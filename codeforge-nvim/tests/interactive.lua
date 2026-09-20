@@ -182,8 +182,48 @@ local service_base = {
 -- CONFLICT with two of the AI's hunks below. buffer.open() will find this
 -- buffer (via find_loaded_buf) and snapshot it as U; file.base provides O.
 -- Nothing is written to disk.
-local service_buf = vim.api.nvim_create_buf(false, true)
-vim.api.nvim_buf_set_name(service_buf, "src/net/service.lua")
+--
+-- Idempotent by design: this file is included more than once in a single
+-- Neovim process (a manual `:luafile` re-run, and tests that `dofile` it), so
+-- it must never collide on the buffer name. An existing buffer is reused and
+-- re-seeded, because a previous include's review will have left the proposal
+-- and review keymaps on it.
+local service_path = "src/net/service.lua"
+local service_abs = vim.fn.fnamemodify(service_path, ":p")
+local service_buf
+for _, b in ipairs(vim.api.nvim_list_bufs()) do
+	if vim.api.nvim_buf_is_valid(b) and vim.fn.fnamemodify(vim.api.nvim_buf_get_name(b), ":p") == service_abs then
+		service_buf = b
+		break
+	end
+end
+if service_buf then
+	-- Undo the previous include's takeover of this buffer: release its save
+	-- guard (restoring buftype/swapfile) and drop its review keymaps, which
+	-- would otherwise still call into the discarded review object.
+	require("codeforge.review.buffer").detach_save_guard(service_buf)
+	local cfg = codeforge.config.keymaps or {}
+	for _, key in ipairs({
+		cfg.toggle_fold,
+		cfg.restore,
+		cfg.accept_hunk,
+		cfg.reject_hunk,
+		cfg.resolve_hunk,
+		cfg.dismiss,
+		cfg.undo,
+		cfg.redo,
+		cfg.next_hunk,
+		cfg.prev_hunk,
+		cfg.toggle_hunk_diff,
+	}) do
+		if key then
+			pcall(vim.keymap.del, "n", key, { buffer = service_buf })
+		end
+	end
+else
+	service_buf = vim.api.nvim_create_buf(false, true)
+	vim.api.nvim_buf_set_name(service_buf, service_path)
+end
 local service_U = vim.deepcopy(service_base)
 -- line 7: user changed to '0.0.0.0'      -> conflicts with hunk-default-host (AI -> '127.0.0.1')
 -- line 13: user added a timeout option   -> conflicts with hunk-retry-connect (AI -> retry loop)

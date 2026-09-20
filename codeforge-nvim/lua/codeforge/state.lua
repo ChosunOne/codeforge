@@ -326,11 +326,20 @@ function M.get_change_status(id)
 	if not entry then
 		return nil
 	end
+	return M.format_status(entry, idx ~= nil)
+end
+
+---Turn a decision-log entry into the wire `status` shape. Shared by the live,
+---retained and persisted lookups so all three report identically.
+---@param entry table
+---@param under_review boolean
+---@return table
+function M.format_status(entry, under_review)
 	local result = {
 		id = entry.id,
 		status = entry.status,
-		under_review = idx ~= nil,
-		files = vim.deepcopy(entry.files),
+		under_review = under_review == true,
+		files = vim.deepcopy(entry.files or {}),
 	}
 	for _, file in ipairs(result.files) do
 		file.failures = file.failures or nil
@@ -338,12 +347,138 @@ function M.get_change_status(id)
 			file.decision = file.decision or "pending"
 		else
 			file.modified = file.modified == true
-			for _, hunk in ipairs(file.hunks) do
+			for _, hunk in ipairs(file.hunks or {}) do
 				hunk.status = hunk.status or "pending"
 			end
 		end
 	end
 	return result
+end
+
+---Read every decision-log entry from disk, newest last.
+---@return table[]
+function M.read_log_file()
+	if not M.log_file then
+		return {}
+	end
+	local f = io.open(M.log_file, "r")
+	if not f then
+		return {}
+	end
+	local raw = f:read("*a")
+	f:close()
+	local ok, decoded = pcall(vim.json.decode, raw)
+	if not ok or type(decoded) ~= "table" then
+		return {}
+	end
+	local out = {}
+	for _, entry in ipairs(decoded) do
+		if type(entry) == "table" and type(entry.id) == "string" then
+			out[#out + 1] = entry
+		end
+	end
+	return out
+end
+
+---Ordering key for a change summary: newest first, ties broken by id so the
+---order is total and stable (pagination depends on it).
+---@param a table
+---@param b table
+---@return boolean
+local function newer_first(a, b)
+	local at, bt = a.timestamp or 0, b.timestamp or 0
+	if at ~= bt then
+		return at > bt
+	end
+	return a.id > b.id
+end
+
+---Every change this editor can describe: tracked now, completed this session,
+---and completed in earlier sessions (read from the decision log). Deduped by
+---id; live state wins over a retained completion, which wins over the log.
+---`status` carries real outcomes only, so a later `reopened` marker never
+---replaces the outcome it followed.
+---@return table[] sorted newest-first
+function M.known_changes()
+	local by_id = {}
+
+	-- Ascending precedence: each source overwrites the previous one wholesale,
+	-- so a live change always beats a leftover log entry for the same id.
+	local function record(summary)
+		by_id[summary.id] = summary
+	end
+
+	-- Persisted log: keep the newest real outcome per id (append-only file).
+	for _, entry in ipairs(M.read_log_file()) do
+		if entry.status ~= "reopened" then
+			local seen = by_id[entry.id]
+			if not seen or (entry.timestamp or 0) >= (seen.timestamp or 0) then
+				record({
+					id = entry.id,
+					title = entry.title or entry.id,
+					timestamp = entry.timestamp or 0,
+					status = entry.status,
+					under_review = false,
+				})
+			end
+		end
+	end
+	for _, entry in ipairs(M.log) do
+		if entry.status ~= "reopened" then
+			record({
+				id = entry.id,
+				title = entry.title or entry.id,
+				timestamp = entry.timestamp or 0,
+				status = entry.status,
+				under_review = false,
+			})
+		end
+	end
+	for id, completed in pairs(M.completed) do
+		local entry = completed.entry or {}
+		record({
+			id = id,
+			title = (completed.change and completed.change.title) or entry.title or id,
+			timestamp = entry.timestamp or 0,
+			status = entry.status,
+			under_review = false,
+		})
+	end
+	for _, change in ipairs(M.changes) do
+		record({
+			id = change.id,
+			title = change.title or change.id,
+			timestamp = change.timestamp or 0,
+			status = M.derive_status(change),
+			under_review = true,
+		})
+	end
+
+	local summaries = {}
+	for _, summary in pairs(by_id) do
+		summaries[#summaries + 1] = summary
+	end
+	table.sort(summaries, newer_first)
+	return summaries
+end
+
+---A change's outcome even when this session never saw it, by re-reading the
+---persisted decision log. `nil` when no real outcome was ever recorded.
+---@param id string
+---@return table|nil
+function M.get_persisted_status(id)
+	local newest
+	for _, entry in ipairs(M.read_log_file()) do
+		if entry.id == id and entry.status ~= "reopened" then
+			if not newest or (entry.timestamp or 0) >= (newest.timestamp or 0) then
+				newest = entry
+			end
+		end
+	end
+	if not newest then
+		return nil
+	end
+	return M.format_status(newest, false)
 end
 
 ---Append an entry to the in-memory decision log (and the on-disk log file).

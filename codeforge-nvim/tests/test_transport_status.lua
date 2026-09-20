@@ -350,7 +350,7 @@ T["snapshots are detached from active reviews and completed log entries"] = func
 	MiniTest.expect.equality(child.lua_get([[vim.deep_equal(before_log, require("codeforge.state").log)]]), true)
 end
 
-T["session reset returns not_found rather than reading the persisted decision log"] = function()
+T["a completed change is still queryable after the session forgets it"] = function()
 	local ack, path = open_proposal()
 	local log_path = F.tmp_path("_log.json")
 	child.lua(string.format([[require("codeforge.state").log_file = %q]], log_path))
@@ -359,7 +359,61 @@ T["session reset returns not_found rather than reading the persisted decision lo
 	MiniTest.expect.equality(status(ack.id).result.status, "rejected")
 	MiniTest.expect.equality(child.fn.filereadable(log_path), 1)
 	child.lua([[require("codeforge.state").reset()]])
-	MiniTest.expect.equality(status(ack.id).error.code, "not_found")
+	child.lua(string.format([[require("codeforge.state").log_file = %q]], log_path))
+	local after = status(ack.id)
+	MiniTest.expect.equality(after.ok, true)
+	MiniTest.expect.equality(after.result.status, "rejected")
+	MiniTest.expect.equality(after.result.under_review, false)
+	MiniTest.expect.equality(after.result.files[1].status, "modified")
+	MiniTest.expect.equality(after.result.files[1].hunks[1].status, "rejected")
+end
+
+T["a persisted outcome never overrides live state or a retained completion"] = function()
+	-- A stale log entry for an id that is live again (undo/reopen) must not win:
+	-- live membership and retained completions are always consulted first.
+	local ack, path = open_proposal()
+	local log_path = F.tmp_path("_log.json")
+	child.lua(string.format([[require("codeforge.state").log_file = %q]], log_path))
+	triage(path, "reject", 1)
+	triage(path, "reject", 3)
+	MiniTest.expect.equality(status(ack.id).result.status, "rejected")
+	MiniTest.expect.equality(child.lua_get([[require("codeforge.sidebar.actions").undo()]]), 1)
+
+	-- Stale entry says rejected; live state says pending.
+	local revived = status(ack.id).result
+	MiniTest.expect.equality(revived.status, "pending")
+	MiniTest.expect.equality(revived.under_review, true)
+end
+
+T["an unknown id is still not_found, not a log scan for anything"] = function()
+	local log_path = F.tmp_path("_log.json")
+	child.lua(string.format([[require("codeforge.state").log_file = %q]], log_path))
+	MiniTest.expect.equality(status("cf-never-existed").error.code, "not_found")
+end
+
+T["a corrupt or unreadable decision log yields not_found rather than an error"] = function()
+	local log_path = F.tmp_path("_log.json")
+	child.fn.writefile({ "{not json" }, log_path)
+	child.lua(string.format([[require("codeforge.state").log_file = %q]], log_path))
+	child.lua(string.format(
+		[[
+			local state = require("codeforge.state")
+			state.reset()
+			state.log_file = %q
+		]],
+		log_path
+	))
+	local reply = status("cf-corrupt-probe")
+	MiniTest.expect.equality(reply.ok, false)
+	MiniTest.expect.equality(reply.error.code, "not_found")
+end
+
+T["an id supplied to status is still strictly validated"] = function()
+	for _, bad in ipairs({ {}, true, 1, "", string.rep("x", 257) }) do
+		local reply = status(bad)
+		MiniTest.expect.equality(reply.ok, false, { fail_reason = vim.inspect(bad) .. " must be refused" })
+		MiniTest.expect.equality(reply.error.code, "invalid_request")
+	end
 end
 
 return T

@@ -151,8 +151,8 @@ T["info takes no extra fields and is the only read-only op"] = function()
 	MiniTest.expect.equality(reply.error.code, "invalid_request")
 end
 
-T["path-bearing ops are still refused, so info is not a general escape hatch"] = function()
-	for _, op in ipairs({ "list", "cwd", "read", "exec", "info " }) do
+T["only the four known ops exist, and none is a file-access escape hatch"] = function()
+	for _, op in ipairs({ "cwd", "read", "exec", "retract", "Info", "info ", "list " }) do
 		local reply = request({ op = op })
 		MiniTest.expect.equality(reply.ok, false, { fail_reason = "op " .. op .. " must be refused" })
 		MiniTest.expect.equality(reply.error.code, "unknown_operation")
