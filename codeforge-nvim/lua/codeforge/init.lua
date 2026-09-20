@@ -1,6 +1,7 @@
 local M = {}
 
 M.config = {
+	session = true,
 	keymaps = {
 		next_change = "<C-]>",
 		prev_change = "<C-[>",
@@ -35,6 +36,16 @@ function M.setup(opts)
 	M.state.log_file = vim.fn.stdpath("data") .. "/codeforge/log.json"
 	require("codeforge.transport").setup_socket(M.config.socket)
 
+	local session = require("codeforge.session")
+	local session_opt = M.config.session
+	if session_opt == true then
+		session_opt = vim.fn.stdpath("data") .. "/codeforge/session.json"
+	end
+	local session_ready = session.configure(session_opt) and session.enabled()
+	if session_ready then
+		session.load()
+	end
+
 	local dapui = require("dapui")
 	dapui.setup({
 		layouts = {
@@ -53,6 +64,9 @@ function M.setup(opts)
 	local element, refresh = require("codeforge.sidebar.element")(M.config)
 	dapui.register_element("codeforge", element)
 	M.state.set_on_change(refresh)
+	if session_ready then
+		session.attach()
+	end
 
 	vim.api.nvim_create_user_command("CodeForge", function()
 		dapui.toggle({ layout = 1 })

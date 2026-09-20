@@ -1397,6 +1397,62 @@ function Review:setup_keymaps()
 	require("codeforge.keymaps").announce(self.buf)
 end
 
+---Adopt a triage description restored by session.load: the decisions are
+---known, but they have not been applied to a buffer yet, so `open` must replay
+---them once the proposal is in place.
+---@param self Review
+---@param triage table { hunk_status, user_modified, expanded }
+function Review:restore_triage(triage)
+	self.hunk_status = {}
+	for id, status in pairs(triage.hunk_status or {}) do
+		self.hunk_status[id] = status
+	end
+	self.user_modified = triage.user_modified == true
+	self.expanded = {}
+	for id, value in pairs(triage.expanded or {}) do
+		self.expanded[id] = value == true
+	end
+	self._needs_replay = true
+end
+
+---Re-apply restored decisions to the freshly built proposal.
+---
+---`apply_hunks` always rebuilds the buffer as the full proposal `P`, so a hunk
+---that was decided before the restart currently shows `P` where it should show
+---its outcome. Replay each decision with the same region semantics as the live
+---accept/reject paths:
+---
+---  * accepted: the region already holds `P`, so only its span is recorded
+---    (with `U == O` this is exactly the clean accept that produced the status),
+---  * rejected: the region reverts to the pre-review snapshot `U`,
+---  * conflicted: left as the proposal; the status stays `conflicted` so the
+---    existing resolve flow owns it.
+---
+---The decisions themselves are NOT revisited: this writes no history, does not
+---notify state, and must never complete the change.
+---@param self Review
+function Review:_replay_decisions()
+	-- render() first: region location reads live extmarks, and placements are
+	-- only discoverable through them.
+	self:render()
+	for _, p in ipairs(self.placements) do
+		local status = self.hunk_status[p.hunk_id]
+		if status == "accepted" or status == "rejected" then
+			local first, last = self:_region_rows(p)
+			if first then
+				local replacement
+				if status == "rejected" then
+					replacement = merge.region_in(self.base_content, self.buf_snapshot, p.region_start, p.region_count)
+				else
+					replacement = vim.api.nvim_buf_get_lines(self.buf, first, last + 1, false)
+				end
+				self:_apply_region(p, first, last, replacement)
+			end
+		end
+	end
+	self:render()
+end
+
 ---@param self Review
 function Review:open()
 	self.buf_snapshot = vim.api.nvim_buf_get_lines(self.buf, 0, -1, false)
@@ -1417,6 +1473,10 @@ function Review:open()
 	end
 	self:apply_hunks()
 	self:render()
+	if self._needs_replay then
+		self._needs_replay = nil
+		self:_replay_decisions()
+	end
 	self:setup_keymaps()
 	state.set_review(self.path, self)
 	self:_install_reconcile_watch()

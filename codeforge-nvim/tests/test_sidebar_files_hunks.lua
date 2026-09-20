@@ -243,11 +243,16 @@ local function await_line(n, substr)
 end
 
 T["file rows show project-relative paths and still target the canonical path"] = function()
+	local root = child.fn.tempname()
+	child.fn.mkdir(root, "p")
+	child.api.nvim_set_current_dir(root)
 	local cwd = child.fn.getcwd()
 	local rel = "sub/inside.lua"
 	local abs_inside = cwd .. "/" .. rel
 	local sibling = cwd .. "-sibling/other.lua"
 	local nested = cwd .. "/a/b/c/deep.lua"
+	child.fn.mkdir(cwd .. "/sub", "p")
+	child.fn.writefile({ "x" }, abs_inside)
 	child.lua(string.format(
 		[[
                 local state = require("codeforge.state")

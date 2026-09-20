@@ -199,9 +199,28 @@ local function base_from_status(file, buf)
 	return lines
 end
 
+---Assert that `path` is reviewable right now. Fails closed, and reports the
+---reason to the caller so it can be recorded as a per-part failure.
+---@param path string
+---@return boolean ok
+---@return string|nil reason
+local function check_reviewable(path)
+	local stat = vim.uv.fs_stat(path)
+	if not stat then
+		return false, "target no longer exists on disk"
+	end
+	if stat.type ~= "file" then
+		return false, "target is not a regular file on disk"
+	end
+	if not vim.uv.fs_access(path, "R") then
+		return false, "target is not readable"
+	end
+	return true
+end
+
 ---Begin (or resume) reviewing `path`: snapshot, build, load into the real buffer.
 ---@param path string
----@return Review|nil review nil when no change covers `path`
+---@return Review|nil review nil when no change covers `path` or the part failed
 function M.ensure_review(path)
 	local existing = state.get_review(path)
 
@@ -213,6 +232,18 @@ function M.ensure_review(path)
 	if not file then
 		vim.notify("CodeForge: no change for " .. path, vim.log.levels.WARN)
 		return nil
+	end
+
+	if file.status == "modified" then
+		local ok, reason = check_reviewable(path)
+		if not ok then
+			local change = state.change_for_path(path)
+			if change then
+				state.mark_file_failed(change.id, path, reason)
+			end
+			vim.notify("CodeForge: cannot review " .. path .. ": " .. reason, vim.log.levels.WARN)
+			return nil
+		end
 	end
 
 	buf = vim.fn.bufadd(path)
@@ -234,6 +265,11 @@ function M.ensure_review(path)
 
 	local base = file.base or base_from_status(file, buf)
 	local review = Review.new(path, buf, base, file.hunks or {})
+	local triage = state.triage[path]
+	if triage then
+		state.triage[path] = nil
+		review:restore_triage(triage)
+	end
 	review:open()
 	return review
 end

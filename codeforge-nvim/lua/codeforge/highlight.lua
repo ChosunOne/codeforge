@@ -23,6 +23,7 @@ function M.setup()
 	link("CodeForgeReviewRejected", "GitSignsDelete", "DiffDelete")
 	link("CodeForgeReviewConflicted", "GitSignsChange", "DiffChange")
 	link("CodeForgeReviewModified", "GitSignsChange", "DiffChange")
+	link("CodeForgeReviewFailed", "DiagnosticWarn", "WarningMsg")
 	vim.api.nvim_set_hl(0, "CodeForgeReviewPending", { link = "Comment" })
 end
 

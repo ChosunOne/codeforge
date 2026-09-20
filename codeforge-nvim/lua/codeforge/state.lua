@@ -7,6 +7,7 @@ M.expanded_files = {}
 M.selected_path = nil
 M.last_view_state = nil
 M.reviews = {}
+M.triage = {}
 M.log = {}
 M.completed = {}
 M.completed_order = {}
@@ -18,6 +19,7 @@ function M.reset()
 	M.current_change_index = nil
 	M.expanded_files = {}
 	M.reviews = {}
+	M.triage = {}
 	M.log = {}
 	M.completed = {}
 	M.completed_order = {}
@@ -45,6 +47,7 @@ end
 ---@field base string[]?
 ---@field decision string? "accepted"|"rejected"
 ---@field atomic_baseline string[]? pre-review content for an atomic file decision
+---@field failures table[]? per-part failures: { reason = string, at = number }
 
 ---@class Hunk
 ---@field id string
@@ -62,6 +65,83 @@ end
 ---@return Review|nil
 function M.get_review(path)
 	return M.reviews[path]
+end
+
+---The triage status for `hunk_id` in `path`: a live review is authoritative,
+---otherwise the description restored by session.load. nil means pending.
+---This is a read-through accessor, so sidebar and status consumers never have
+---to know whether a review has been opened yet.
+---@param path string
+---@param hunk_id string
+---@return string|nil
+function M.hunk_status(path, hunk_id)
+	local review = M.reviews[path]
+	if review then
+		-- An open review is fully authoritative: nil there means pending, and
+		-- must not fall through to a restored decision it may have replaced.
+		return review.hunk_status and review.hunk_status[hunk_id] or nil
+	end
+	local triage = M.triage[path]
+	return triage and triage.hunk_status and triage.hunk_status[hunk_id] or nil
+end
+
+---True when `path` was hand-edited during review: live review first, then the
+---restored description.
+---@param path string
+---@return boolean
+function M.review_modified(path)
+	local review = M.reviews[path]
+	if review then
+		return review.user_modified == true
+	end
+	local triage = M.triage[path]
+	return triage ~= nil and triage.user_modified == true
+end
+
+---True `path` has a live review or restored triage worth describing. Undo
+---history does not survive a restart, so a restored decision is deliberately
+---not treated as needing a review object -- the sidebar and status paths read
+---it through `hunk_status`/`review_modified` instead.
+---@param path string
+---@return boolean
+function M.has_triage(path)
+	local review = M.reviews[path]
+	if review then
+		if review.user_modified then
+			return true
+		end
+		for _ in pairs(review.hunk_status or {}) do
+			return true
+		end
+		return false
+	end
+	local triage = M.triage[path]
+	if not triage then
+		return false
+	end
+	if triage.user_modified == true then
+		return true
+	end
+	for _ in pairs(triage.hunk_status or {}) do
+		return true
+	end
+	return false
+end
+
+---Fold expansion for `path`'s `hunk_id`: live review (keyed by hunk id) first,
+---then the restored description.
+---Fold expansion for `path`'s `hunk_id`: a live review (keyed by hunk id)
+---first, then the restored description.
+---@param path string
+---@param hunk_id string
+---@return boolean
+function M.hunk_expanded(path, hunk_id)
+	local review = M.reviews[path]
+	if review then
+		return review.expanded and review.expanded[hunk_id] == true
+	end
+	local triage = M.triage[path]
+	return triage ~= nil and triage.expanded and triage.expanded[hunk_id] == true
 end
 
 ---Store/replace the review record for `path`
@@ -208,20 +288,22 @@ function M.build_log_entry(change)
 	}
 
 	for _, file in ipairs(change.files or {}) do
-		local review = M.reviews[file.path]
 		local fentry = {
 			path = file.path,
 			status = file.status,
 		}
+		if file.failures and #file.failures > 0 then
+			fentry.failures = vim.deepcopy(file.failures)
+		end
 		if file.status == "added" or file.status == "deleted" then
 			fentry.decision = file.decision
 		else
-			fentry.modified = review and review.user_modified or nil
+			fentry.modified = M.review_modified(file.path) or nil
 			fentry.hunks = {}
 			for _, hunk in ipairs(file.hunks or {}) do
 				fentry.hunks[#fentry.hunks + 1] = {
 					id = hunk.id,
-					status = review and review.hunk_status[hunk.id] or nil,
+					status = M.hunk_status(file.path, hunk.id),
 				}
 			end
 		end
@@ -251,6 +333,7 @@ function M.get_change_status(id)
 		files = vim.deepcopy(entry.files),
 	}
 	for _, file in ipairs(result.files) do
+		file.failures = file.failures or nil
 		if file.status == "added" or file.status == "deleted" then
 			file.decision = file.decision or "pending"
 		else
@@ -314,6 +397,72 @@ function M.change_for_path(path)
 		end
 	end
 	return nil
+end
+
+---Find the tracked file entry for `change_id`/`path`, or nil.
+---@param change_id string
+---@param path string
+---@return File|nil
+function M.file_for(change_id, path)
+	for _, change in ipairs(M.changes) do
+		if change.id == change_id then
+			for _, file in ipairs(change.files or {}) do
+				if file.path == path then
+					return file
+				end
+			end
+		end
+	end
+	return nil
+end
+
+---Mark one part (file) of a change as failed to review or apply. The part is
+---kept and its triage is preserved: a failure is a reported state, not a
+---reason to silently drop decisions. Re-marking the same reason refreshes its
+---timestamp instead of stacking duplicates.
+---@param change_id string
+---@param path string
+---@param reason string
+---@return boolean marked false when the change/file is not tracked
+function M.mark_file_failed(change_id, path, reason)
+	local file = M.file_for(change_id, path)
+	if not file or type(reason) ~= "string" or #reason == 0 then
+		return false
+	end
+	file.failures = file.failures or {}
+	for _, failure in ipairs(file.failures) do
+		if failure.reason == reason then
+			failure.at = os.time()
+			M.notify_change()
+			return true
+		end
+	end
+	file.failures[#file.failures + 1] = { reason = reason, at = os.time() }
+	M.notify_change()
+	return true
+end
+
+---Clear one recorded failure for `file` by reason. Explicit only: a failure
+---persists until the failed operation is retried successfully or the user
+---dismisses it.
+---@param file File
+---@param reason string
+---@return boolean cleared
+function M.clear_file_failure(file, reason)
+	if type(file) ~= "table" or type(file.failures) ~= "table" then
+		return false
+	end
+	for i, failure in ipairs(file.failures) do
+		if failure.reason == reason then
+			table.remove(file.failures, i)
+			if #file.failures == 0 then
+				file.failures = nil
+			end
+			M.notify_change()
+			return true
+		end
+	end
+	return false
 end
 
 ---Preflight completion for `change`: refuse when any open review's final
@@ -527,7 +676,7 @@ function M.file_completed(file)
 
 	local review = M.reviews[file.path]
 	for _, hunk in ipairs(file.hunks or {}) do
-		local st = review and review.hunk_status[hunk.id] or nil
+		local st = M.hunk_status(file.path, hunk.id)
 		if st ~= "accepted" and st ~= "rejected" then
 			return false
 		end
@@ -543,16 +692,18 @@ end
 ---@return string hl_group
 function M.file_status_glyph(file)
 	local hl = require("codeforge.highlight")
+	if file.failures and #file.failures > 0 then
+		return "⚠", "CodeForgeReviewFailed"
+	end
 	if not M.file_completed(file) then
 		return "○", hl.get_review_status_hl(nil)
 	end
 	if is_atomic(file) then
 		return "●", hl.get_review_status_hl(file.decision)
 	end
-	local review = M.reviews[file.path]
 	local all_accepted = true
 	for _, hunk in ipairs(file.hunks or {}) do
-		if not (review and review.hunk_status[hunk.id] == "accepted") then
+		if M.hunk_status(file.path, hunk.id) ~= "accepted" then
 			all_accepted = false
 			break
 		end
@@ -572,11 +723,14 @@ function M.derive_status(change)
 	local any_accepted = false
 	local any_rejected = false
 	local user_modified = false
+	local any_failed = false
 
 	for _, file in ipairs(change.files or {}) do
-		local review = M.reviews[file.path]
-		if review and review.user_modified then
+		if M.review_modified(file.path) then
 			user_modified = true
+		end
+		if file.failures and #file.failures > 0 then
+			any_failed = true
 		end
 		if is_atomic(file) then
 			if file.decision == "accepted" then
@@ -588,7 +742,7 @@ function M.derive_status(change)
 			end
 		else
 			for _, hunk in ipairs(file.hunks or {}) do
-				local st = review and review.hunk_status[hunk.id] or nil
+				local st = M.hunk_status(file.path, hunk.id)
 				if st == "accepted" then
 					any_accepted = true
 				elseif st == "rejected" then
@@ -603,7 +757,7 @@ function M.derive_status(change)
 	if any_pending then
 		return "pending"
 	end
-	if user_modified or (any_accepted and any_rejected) then
+	if user_modified or any_failed or (any_accepted and any_rejected) then
 		return "modified"
 	end
 	if any_rejected then
