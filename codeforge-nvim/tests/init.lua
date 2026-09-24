@@ -22,4 +22,9 @@ require("mini.test").setup()
 -- Tests own their change sets: a real session file must never leak between runs
 -- or restore changes a test did not seed. A test that needs the real setup()
 -- wiring points CODEFORGE_TEST_SESSION at its own file and restarts.
-require("codeforge").setup({ socket = false, session = vim.env.CODEFORGE_TEST_SESSION or false })
+--
+-- CODEFORGE_TEST_NO_SETUP=1 skips this call so plugin/codeforge.lua's own
+-- auto-initialization is the only thing that can run setup() (test_autoload).
+if vim.env.CODEFORGE_TEST_NO_SETUP ~= "1" then
+	require("codeforge").setup({ socket = false, session = vim.env.CODEFORGE_TEST_SESSION or false })
+end
