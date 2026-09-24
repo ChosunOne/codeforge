@@ -1,20 +1,8 @@
 ---Session persistence: keep tracked changes and their triage across restarts.
-
----A restart loses every live object (buffers, Reviews, extmarks, undo history),
----so nothing about a review may be *assumed* to survive. What is persisted is
----therefore only the inert description of a review:
----
----  * the tracked change-sets (id/title/base/hunks) needed to rebuild `P` from
----    `O`, exactly as an original publish would,
----  * the triage decisions and hand-edit flags, kept in `state.triage` until a
----    review is actually opened,
----  * view state (current change, file and fold expansion).
----
----Not persisted, deliberately:
----  * buffer-level snapshots (`U`, `atomic_baseline`) and undo history: they
----    describe a live editing session that no longer exists,
----  * `completed` history: it is not part of "the change set" and its log
----    already persists separately.
+---Persists only the inert description of a review: the change-sets needed to
+---rebuild the proposal, the triage decisions, and view state. Buffer-level
+---snapshots (`U`, `atomic_baseline`), undo history and `completed` history are
+---not persisted.
 local M = {}
 
 local VERSION = 1
@@ -91,8 +79,7 @@ function M.path()
 	return configured
 end
 
----Copy only the inert description of a hunk. Display metadata the review
----derives itself is not session state.
+---Copy the persisted fields of a hunk.
 ---@param hunk table
 ---@return table
 local function copy_hunk(hunk)
@@ -110,9 +97,7 @@ local function copy_hunk(hunk)
 	return out
 end
 
----Copy only the inert description of a file. `atomic_baseline` and any
----transient buffer content are excluded on purpose: they belong to a live
----editing session, not to the change set.
+---Copy the persisted fields of a file. `atomic_baseline` is excluded.
 ---@param file table
 ---@return table
 local function copy_file(file)
@@ -157,8 +142,6 @@ function M.snapshot()
 		}
 		for j, file in ipairs(change.files or {}) do
 			out.files[j] = copy_file(file)
-			-- Triage: a live review is authoritative; an already-restored but
-			-- unopened part is described by `state.triage`.
 			local triage = M._triage_for(file.path)
 			if triage then
 				snapshot.triage[file.path] = triage
@@ -179,16 +162,13 @@ function M._triage_for(path)
 	local review = state.reviews[path]
 	if review then
 		local hunk_status = {}
-		local any = false
 		for id, status in pairs(review.hunk_status or {}) do
 			hunk_status[id] = status
-			any = true
 		end
 		return {
 			hunk_status = hunk_status,
 			user_modified = review.user_modified == true,
 			expanded = vim.deepcopy(review.expanded or {}),
-			present = any or review.user_modified == true,
 		}
 	end
 	local restored = state.triage[path]
@@ -198,8 +178,8 @@ function M._triage_for(path)
 	return nil
 end
 
----Persist the snapshot. Skips the write when the state has not changed since
----the last successful write, so write-through on every notify stays cheap.
+---Persist the snapshot. Skips the write when the state is unchanged since the
+---last successful write.
 ---@return boolean written
 function M.save()
 	if not configured then
@@ -279,8 +259,7 @@ local function validate_file(file, context)
 	return nil
 end
 
----Validate the whole snapshot before admitting any of it, so a partially
----valid file can never leave half a session restored.
+---Validate the whole snapshot before admitting any of it.
 ---@param snapshot any
 ---@return string|nil
 local function validate_snapshot(snapshot)
@@ -325,7 +304,7 @@ local function validate_snapshot(snapshot)
 end
 
 ---Load the session file into state. Returns the number of restored changes,
----or 0 when there is nothing usable to restore. Never clobbers a change set
+---or 0 when there is nothing usable to restore. Does not clobber a change set
 ---that already exists in this session.
 ---@return integer restored
 function M.load()
@@ -367,8 +346,6 @@ function M.load()
 		}
 		for j, file in ipairs(change.files) do
 			out.files[j] = copy_file(file)
-			-- `atomic_baseline` is not restored: it described undo of a decision
-			-- in a process that no longer exists.
 			local restore = snapshot.triage and snapshot.triage[file.path]
 			if restore then
 				local known = {}
@@ -390,7 +367,7 @@ function M.load()
 					end
 				end
 				-- Admit the record when anything survived validation, including a
-				-- pending fold's expansion: `expanded` alone is meaningful state.
+				-- pending fold's expansion.
 				local describe = any or restore.user_modified == true or next(expanded) ~= nil
 				if describe then
 					triage[file.path] = {
@@ -427,8 +404,7 @@ function M.load()
 	return #changes
 end
 
----Persist on every state change plus on exit. Safe to call once; repeated
----calls compose the callback only once.
+---Persist on every state change and on exit. Safe to call once.
 function M.attach()
 	if attached then
 		return

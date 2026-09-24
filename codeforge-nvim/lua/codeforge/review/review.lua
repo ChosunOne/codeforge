@@ -6,7 +6,7 @@ local merge = require("codeforge.review.merge")
 ---@field hunk_id string
 ---@field first integer 0-indexed live buffer region start
 ---@field last integer 0-indexed live buffer end (inclusive)
----@field region_len_integer integer number of buffer lines the conflict region occupies
+---@field region_len integer number of buffer lines the conflict region occupies
 ---@field resolve_buf integer the editable conflict buffer
 ---@field resolve_win integer window showing the resolve_buf
 ---@field proposal_R string[] the proposal side P'[R], for <C-x>p take-proposal
@@ -42,7 +42,7 @@ local function win_for_buf(buf)
 	return nil
 end
 
----Build the virt_lines blcok for a `fold` given its expanded state.
+---Build the virt_lines block for a `fold` given its expanded state.
 ---Collapsed: the "- N line(s) removed" hint. Expanded: one virt line
 ---per deleted line, each styled with `CodeForgeHunkDeleted`.
 ---@param fold Fold
@@ -381,16 +381,14 @@ function Review:_region_span(p)
 end
 
 ---Assemble the post-review buffer. Resolved hunk regions keep their live
----(resolved) text; unresolved hunks and the base regions between hunks fall
----back to the user's pre-review snapshot `U`, so edits the user made outside
----the proposed hunks survive completion and dismissal. Base regions the user
----edited during review are kept as live text instead of being reverted.
+---(resolved) text, and unresolved hunks and the regions between them fall back
+---to the user's pre-review snapshot `U`, so edits outside the proposed hunks
+---survive completion.
 ---
----Returns the assembled lines and a list of unresolved gap conflicts (a gap
----where the pre-review snapshot and the during-review live text both changed
----the same line). When conflicts is non-empty the caller MUST NOT apply the
----lines or finish the review: assembly has no safe choice and would otherwise
----either write merge markers or silently drop a side.
+---Returns the assembled lines and a list of unresolved gap conflicts (a region
+---where the pre-review snapshot and the live text both changed the same line).
+---When conflicts is non-empty the caller must not apply the lines or finish the
+---review.
 ---@param self Review
 ---@return string[] final
 ---@return table[] conflicts
@@ -590,9 +588,8 @@ function Review:assemble_final()
 	return out, conflicts
 end
 
----Preflight final assembly without applying anything. Returns false with an
----actionable message when a gap conflict would make finishing unsafe, so the
----caller can keep the review and both snapshots rather than discarding a side.
+---Preflight final assembly without applying anything. Returns false with a
+---message when a gap conflict would make finishing unsafe.
 ---@param self Review
 ---@return boolean ok
 ---@return string|nil message
@@ -1533,10 +1530,8 @@ function Review:_reconcile()
 	end
 
 	local buf_lines = vim.api.nvim_buf_get_lines(self.buf, 0, -1, false)
-	-- Interpret this edit against the last rendered buffer: a row whose content
-	-- *changed* was amended in place (the hunk stays pending and adopts the new
-	-- text); a row that is *gone* was deleted (drop its sign). A stale extmark
-	-- alone cannot express that distinction.
+	-- A row whose content changed was amended in place (the hunk stays pending
+	-- and adopts the new text); a row that is gone was deleted (drop its sign).
 	local rows = merge.row_map(self._baseline_lines or buf_lines, buf_lines)
 	local changed = false
 	for _, p in ipairs(self.placements) do
@@ -1628,8 +1623,7 @@ end
 ---@param self Review
 ---@return boolean finished
 function Review:dismiss()
-	-- Preflight before any teardown: a conflicting gap has no safe assembly, so
-	-- keep the review (buffer, snapshots, save guard) instead of finishing.
+	-- Refuse before any teardown: a conflicting gap has no safe assembly.
 	local pre_ok, pre_msg = self:preflight()
 	if not pre_ok then
 		vim.notify("CodeForge: " .. pre_msg, vim.log.levels.WARN)

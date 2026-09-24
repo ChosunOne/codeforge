@@ -4,8 +4,6 @@ M.changes = {}
 M.current_change_id = nil
 M.current_change_index = nil
 M.expanded_files = {}
-M.selected_path = nil
-M.last_view_state = nil
 M.reviews = {}
 M.triage = {}
 M.log = {}
@@ -23,8 +21,6 @@ function M.reset()
 	M.log = {}
 	M.completed = {}
 	M.completed_order = {}
-	M.selected_path = nil
-	M.last_view_state = nil
 	M.invalidate_log_cache()
 	require("codeforge.history").reset()
 end
@@ -70,16 +66,12 @@ end
 
 ---The triage status for `hunk_id` in `path`: a live review is authoritative,
 ---otherwise the description restored by session.load. nil means pending.
----This is a read-through accessor, so sidebar and status consumers never have
----to know whether a review has been opened yet.
 ---@param path string
 ---@param hunk_id string
 ---@return string|nil
 function M.hunk_status(path, hunk_id)
 	local review = M.reviews[path]
 	if review then
-		-- An open review is fully authoritative: nil there means pending, and
-		-- must not fall through to a restored decision it may have replaced.
 		return review.hunk_status and review.hunk_status[hunk_id] or nil
 	end
 	local triage = M.triage[path]
@@ -97,52 +89,6 @@ function M.review_modified(path)
 	end
 	local triage = M.triage[path]
 	return triage ~= nil and triage.user_modified == true
-end
-
----True `path` has a live review or restored triage worth describing. Undo
----history does not survive a restart, so a restored decision is deliberately
----not treated as needing a review object -- the sidebar and status paths read
----it through `hunk_status`/`review_modified` instead.
----@param path string
----@return boolean
-function M.has_triage(path)
-	local review = M.reviews[path]
-	if review then
-		if review.user_modified then
-			return true
-		end
-		for _ in pairs(review.hunk_status or {}) do
-			return true
-		end
-		return false
-	end
-	local triage = M.triage[path]
-	if not triage then
-		return false
-	end
-	if triage.user_modified == true then
-		return true
-	end
-	for _ in pairs(triage.hunk_status or {}) do
-		return true
-	end
-	return false
-end
-
----Fold expansion for `path`'s `hunk_id`: live review (keyed by hunk id) first,
----then the restored description.
----Fold expansion for `path`'s `hunk_id`: a live review (keyed by hunk id)
----first, then the restored description.
----@param path string
----@param hunk_id string
----@return boolean
-function M.hunk_expanded(path, hunk_id)
-	local review = M.reviews[path]
-	if review then
-		return review.expanded and review.expanded[hunk_id] == true
-	end
-	local triage = M.triage[path]
-	return triage ~= nil and triage.expanded and triage.expanded[hunk_id] == true
 end
 
 ---Store/replace the review record for `path`
@@ -226,9 +172,6 @@ function M.prev_change()
 		M._on_change()
 	end
 end
-
----@param id string
-function M.select_change(id) end
 
 -- Returns whether a file's hunks are expanded
 ---@param file_path string
@@ -320,8 +263,6 @@ end
 ---@return table|nil
 function M.get_change_status(id)
 	local idx = change_index(id)
-	-- Live membership wins after undo/reopen. Never re-derive completed
-	-- outcomes through M.reviews: another change may now own those paths.
 	local completed = M.completed[id]
 	local entry = idx and M.build_log_entry(M.changes[idx]) or completed and completed.entry
 	if not entry then
@@ -361,7 +302,6 @@ M._log_cache = nil
 M._log_cache_file = nil
 M._log_cache_size = nil
 M._log_cache_mtime = nil
-M._log_cache_sec = nil
 
 ---Read the `id` of a decision-log entry, or nil when the entry is unusable.
 ---@param entry any
@@ -373,24 +313,17 @@ local function log_entry_id(entry)
 	return nil
 end
 
----Decode the raw log text into entries.
----
----Two shapes exist in the wild: the current JSONL (one entry per line) and the
----legacy whole-file JSON array. A file can also be BOTH — a legacy array that
----has since had a JSONL line appended by an upgraded writer — which is exactly
----the mid-upgrade state this has to survive. The rule is therefore: never
----discard anything, and never treat a parse failure as "empty".
----
----A line that is corrupt, truncated or missing a usable id is skipped rather
----than poisoning the rest: this is an append-only record that may have been
----interrupted mid-write.
+---Decode the raw log text into entries. Handles both the current JSONL shape
+---(one entry per line) and a legacy whole-file JSON array; a file where a
+---legacy array is followed by JSONL lines yields entries from both. A line
+---that is corrupt, truncated or missing a usable id is skipped.
 ---@param raw string
 ---@return table[] entries
 ---@return boolean migrate true when the file should be rewritten as JSONL
 local function decode_log(raw)
 	local trimmed = raw:gsub("^%s+", "")
 
-	-- Legacy whole-file array: only when the ENTIRE file parses as one array.
+	-- Legacy whole-file array: only when the entire file parses as one array.
 	if trimmed:sub(1, 1) == "[" then
 		local ok, decoded = pcall(vim.json.decode, raw)
 		if ok and type(decoded) == "table" then
@@ -402,10 +335,8 @@ local function decode_log(raw)
 			end
 			return out, true
 		end
-		-- An array that does NOT decode as a whole (a legacy file with trailing
-		-- JSONL lines, or a damaged array) falls through to per-line parsing so
-		-- whatever is recoverable is recovered. It must never rewrite the file,
-		-- because a failed whole-file decode says nothing about its contents.
+		-- A whole-file decode failure falls through to per-line parsing so that
+		-- whatever is recoverable is recovered.
 	end
 
 	local out = {}
@@ -415,8 +346,7 @@ local function decode_log(raw)
 			local ok, decoded = pcall(vim.json.decode, line)
 			if ok and type(decoded) == "table" then
 				if trimmed_line:sub(1, 1) == "[" then
-					-- A legacy array sharing the file with JSONL lines: take every
-					-- entry it holds rather than discarding the array as unreadable.
+					-- A legacy array on its own line: take every entry it holds.
 					for _, entry in ipairs(decoded) do
 						if log_entry_id(entry) then
 							out[#out + 1] = entry
@@ -428,16 +358,13 @@ local function decode_log(raw)
 			end
 		end
 	end
-	-- Only migrate when the file is genuinely not JSONL yet AND still yielded
-	-- entries. A file we cannot parse at all is left untouched: truncating it
-	-- would destroy the only copy of the outcomes.
+	-- Migrate only when the file is not JSONL yet and yielded entries: a file
+	-- that cannot be parsed at all is left untouched.
 	local needs_migration = trimmed:sub(1, 1) == "[" and #out > 0
 	return out, needs_migration
 end
 
----The file's identity, for cache validation. `size`/`mtime` catch an external
----append; the coarse second-resolution mtime is paired with size because a
----same-second append changes the size anyway.
+---The file's identity, for cache validation.
 ---@return table|nil
 local function log_file_identity(path)
 	local st = vim.uv.fs_stat(path)
@@ -563,21 +490,18 @@ function M.known_changes()
 	return M._summarize_changes(M._read_log_raw())
 end
 
----Build the summary list from an already-decoded log. Callers that need the
----total as well as a page pass the entries once, so a single `list` request
----does not scan or decode the log twice.
+---Build the summary list from an already-decoded log.
 ---@param log_entries table[]
 ---@return table[] sorted newest-first
 function M._summarize_changes(log_entries)
 	local by_id = {}
 
-	-- Ascending precedence: each source overwrites the previous one wholesale,
-	-- so a live change always beats a leftover log entry for the same id.
+	-- Ascending precedence: each source overwrites the previous one.
 	local function record(summary)
 		by_id[summary.id] = summary
 	end
 
-	-- Persisted log: keep the newest real outcome per id (append-only file).
+	-- Keep the newest real outcome per id; a `reopened` marker is not an outcome.
 	for _, entry in ipairs(log_entries) do
 		if entry.status ~= "reopened" then
 			local seen = by_id[entry.id]
@@ -631,8 +555,8 @@ function M._summarize_changes(log_entries)
 	return summaries
 end
 
----A change's outcome even when this session never saw it, by re-reading the
----persisted decision log. `nil` when no real outcome was ever recorded.
+---A change's outcome from the persisted decision log, for a change this
+---session did not see. `nil` when no outcome was ever recorded.
 ---@param id string
 ---@return table|nil
 function M.get_persisted_status(id)
@@ -657,9 +581,8 @@ function M.append_log(entry)
 	M.persist_log(entry)
 end
 
----Append `entry` to `M.log_file` as one JSONL line. O(1): the existing file is
----never read or rewritten, which is what makes a decision cheap regardless of
----how long the log has grown.
+---Append `entry` to `M.log_file` as one JSONL line, without reading the
+---existing file.
 ---@param entry table
 function M.persist_log(entry)
 	if not M.log_file then
@@ -709,10 +632,9 @@ function M.file_for(change_id, path)
 	return nil
 end
 
----Mark one part (file) of a change as failed to review or apply. The part is
----kept and its triage is preserved: a failure is a reported state, not a
----reason to silently drop decisions. Re-marking the same reason refreshes its
----timestamp instead of stacking duplicates.
+---Mark one part (file) of a change as failed to review or apply. The part and
+---its triage are preserved. Re-marking the same reason refreshes its timestamp
+---instead of stacking duplicates.
 ---@param change_id string
 ---@param path string
 ---@param reason string
@@ -735,9 +657,7 @@ function M.mark_file_failed(change_id, path, reason)
 	return true
 end
 
----Clear one recorded failure for `file` by reason. Explicit only: a failure
----persists until the failed operation is retried successfully or the user
----dismisses it.
+---Clear one recorded failure for `file` by reason.
 ---@param file File
 ---@param reason string
 ---@return boolean cleared
@@ -759,7 +679,7 @@ function M.clear_file_failure(file, reason)
 end
 
 ---Preflight completion for `change`: refuse when any open review's final
----assembly is unsafe (conflicting gap edits). Read-only: no teardown, no log.
+---assembly is unsafe (conflicting gap edits). Read-only.
 ---@param change Change
 ---@return boolean ok
 ---@return string|nil message
@@ -781,8 +701,7 @@ end
 
 ---Complete a fully-triaged change. Refuses (returns false, logs nothing,
 ---keeps reviews and the change tracked) when any file's final assembly is
----unsafe. Preflights every file before any teardown so a later conflict never
----leaves an earlier file partially dismissed.
+---unsafe.
 ---@param change Change
 ---@return boolean completed
 function M.complete_change(change)
@@ -863,8 +782,8 @@ function M.reopen_change(id)
 	local change = completed.change
 	for _, file in ipairs(change.files or {}) do
 		file.decision = nil
-		-- A reopen is a new review round: the previous final content becomes the
-		-- new `U`, so the old atomic baseline must be re-captured, not reused.
+		-- The previous final content is the new `U`, so the atomic baseline must
+		-- be re-captured rather than reused.
 		file.atomic_baseline = nil
 	end
 	table.insert(M.changes, change)
@@ -883,7 +802,7 @@ end
 
 ---Watch for completion: when `change`'s derived status has left `pending`,
 ---complete it. Returns false when the change is still pending or when
----completion is refused (unsafe final assembly); the change stays tracked.
+---completion is refused.
 ---@param change Change
 ---@return boolean completed
 function M.maybe_complete(change)
@@ -935,22 +854,6 @@ function M.remove_change(id, entry)
 	return true
 end
 
----@param file_path string
-function M.expand_file(file_path) end
-
----@param file_path string
-function M.collapse_file(file_path) end
-
----@param hunk_id string
----@return string
-function M.get_hunk_status(hunk_id)
-	return "pending"
-end
-
----@param hunk_id string
----@param status string
-function M.set_hunk_status(hunk_id, status) end
-
 ---True when `file` needs no hunk-level review: a whole-file addition
 ---or a whole-file deletion.
 ---@param file File
@@ -967,7 +870,6 @@ function M.file_completed(file)
 		return file.decision ~= nil
 	end
 
-	local review = M.reviews[file.path]
 	for _, hunk in ipairs(file.hunks or {}) do
 		local st = M.hunk_status(file.path, hunk.id)
 		if st ~= "accepted" and st ~= "rejected" then
@@ -1005,10 +907,10 @@ function M.file_status_glyph(file)
 end
 
 ---Derive a change's aggregate review status from its child hunks.
----  pending	-> any hunk still pending
----  accepted	-> all hunks accepted
----  rejected	-> all hunks rejected
----  modified	-> mixed accept/reject, or edited
+---  pending  -> any hunk still pending
+---  accepted -> all hunks accepted
+---  rejected -> all hunks rejected
+---  modified -> mixed accept/reject, or edited
 ---@param change Change
 ---@return "pending"|"accepted"|"rejected"|"modified"
 function M.derive_status(change)

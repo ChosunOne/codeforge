@@ -1,11 +1,6 @@
 ---On-demand hunk diff popup for the review buffer.
----
----The settled winner of the "make changes easier to notice" A/B experiment
----(the whole-file popup and inline ghost variants were tried and removed).
----A non-focusable float that shows the diff of the hunk under the cursor,
----computed against the pre-review snapshot `U`, so it answers "what has the
----review changed so far?": accepted hunks stay visible, rejected ones
----vanish, hand-edits show up as they are typed.
+---A non-focusable float showing the diff of the hunk under the cursor,
+---computed against the pre-review snapshot `U`.
 ---
 ---Behavior contract:
 ---  * `<C-x>p` (`keymaps.toggle_hunk_diff`) toggles it; pressing the key with
@@ -14,13 +9,12 @@
 ---    row (below it, flipped above when there is no room), stays glued while
 ---    the window scrolls or resizes, and pins to the nearer window edge when
 ---    the hunk itself scrolls out of view. Right edge stays pinned.
----  * Works on accepted/rejected hunks (a rejected hunk shows a "no
+---  * Accepted and rejected hunks both work (a rejected hunk shows a "no
 ---    difference" note); refreshes/re-anchors when other hunks are resolved.
 ---  * Diffs taller than the window fill it and truncate with a "+N more
 ---    lines" hint.
 ---
----Diffing goes through `merge.diff_regions` (git), the engine the rest of
----the review flow uses.
+---Diffing goes through `merge.diff_regions` (git).
 local merge = require("codeforge.review.merge")
 local diff = require("codeforge.review.diff")
 

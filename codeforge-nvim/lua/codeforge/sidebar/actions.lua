@@ -57,17 +57,14 @@ local function apply_atomic_content(file, decision)
 
 	local review = state.get_review(path)
 	local before_lines = read_buffer(path)
-	-- The pre-review baseline is captured on first decision and kept on the file
-	-- entry: a live review's snapshot U is authoritative, otherwise the buffer
-	-- still holds the user's own content. Never reconstruct from the change-set's
-	-- base, which would discard unsaved edits.
+	-- A live review's snapshot `U` is authoritative, otherwise the buffer holds
+	-- the user's own content. Not reconstructible from the change-set base.
 	if file.atomic_baseline == nil then
 		file.atomic_baseline = review and review.buf_snapshot or before_lines
 	end
 	local baseline = file.atomic_baseline
 
-	-- Accepting an added file keeps what the preview shows, hand-edits and all;
-	-- dismissing below would otherwise rebuild a pristine proposal.
+	-- Accepting an added file keeps the preview (including hand-edits).
 	local keep_preview = decision == "accepted" and file.status == "added" and review ~= nil
 
 	if review then

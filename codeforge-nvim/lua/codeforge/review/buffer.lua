@@ -28,12 +28,10 @@ end
 
 ---Take over saving for a review buffer with `buftype=acwrite`.
 ---
----The guard owns the write for the duration of the review. It snapshots the
----disk state on attach and again after every successful write, so consecutive
----normal saves during review are allowed while a genuine external change (disk
----no longer matches what we last saw, nor the buffer) is refused. `opts`
----carries the buffer options captured before the review hijacked them, so
----`detach_save_guard` can restore them once the review ends.
+---Snapshots the disk state on attach and again after every successful write, so
+---consecutive normal saves during review are allowed while an external change to
+---disk is refused. `opts` carries the buffer options captured before the review
+---changed them, so `detach_save_guard` can restore them.
 ---@param buf integer
 ---@param path string
 ---@param opts? table captured buffer options
@@ -109,7 +107,7 @@ local function attach_save_guard(buf, path, opts)
 end
 
 ---Release the review's save guard for `buf`, restoring the buffer options the
----review hijacked (`buftype`, `swapfile`). Idempotent.
+---review changed (`buftype`, `swapfile`). Idempotent.
 ---@param buf integer
 function M.detach_save_guard(buf)
 	local autocmd = M.save_guards[buf]
