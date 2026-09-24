@@ -172,7 +172,7 @@ local function handle_list(request)
 	end
 
 	local state = require("codeforge.state")
-	local known = state.known_changes()
+	local known = state._summarize_changes(state._read_log_raw())
 	local summaries = after_cursor(known, position)
 	local page = {}
 	for i = 1, math.min(limit, #summaries) do

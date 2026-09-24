@@ -25,6 +25,7 @@ function M.reset()
 	M.completed_order = {}
 	M.selected_path = nil
 	M.last_view_state = nil
+	M.invalidate_log_cache()
 	require("codeforge.history").reset()
 end
 
@@ -355,29 +356,188 @@ function M.format_status(entry, under_review)
 	return result
 end
 
----Read every decision-log entry from disk, newest last.
----@return table[]
+M.log_file = nil
+M._log_cache = nil
+M._log_cache_file = nil
+M._log_cache_size = nil
+M._log_cache_mtime = nil
+M._log_cache_sec = nil
+
+---Read the `id` of a decision-log entry, or nil when the entry is unusable.
+---@param entry any
+---@return string|nil
+local function log_entry_id(entry)
+	if type(entry) == "table" and type(entry.id) == "string" and #entry.id > 0 then
+		return entry.id
+	end
+	return nil
+end
+
+---Decode the raw log text into entries.
+---
+---Two shapes exist in the wild: the current JSONL (one entry per line) and the
+---legacy whole-file JSON array. A file can also be BOTH — a legacy array that
+---has since had a JSONL line appended by an upgraded writer — which is exactly
+---the mid-upgrade state this has to survive. The rule is therefore: never
+---discard anything, and never treat a parse failure as "empty".
+---
+---A line that is corrupt, truncated or missing a usable id is skipped rather
+---than poisoning the rest: this is an append-only record that may have been
+---interrupted mid-write.
+---@param raw string
+---@return table[] entries
+---@return boolean migrate true when the file should be rewritten as JSONL
+local function decode_log(raw)
+	local trimmed = raw:gsub("^%s+", "")
+
+	-- Legacy whole-file array: only when the ENTIRE file parses as one array.
+	if trimmed:sub(1, 1) == "[" then
+		local ok, decoded = pcall(vim.json.decode, raw)
+		if ok and type(decoded) == "table" then
+			local out = {}
+			for _, entry in ipairs(decoded) do
+				if log_entry_id(entry) then
+					out[#out + 1] = entry
+				end
+			end
+			return out, true
+		end
+		-- An array that does NOT decode as a whole (a legacy file with trailing
+		-- JSONL lines, or a damaged array) falls through to per-line parsing so
+		-- whatever is recoverable is recovered. It must never rewrite the file,
+		-- because a failed whole-file decode says nothing about its contents.
+	end
+
+	local out = {}
+	for line in raw:gmatch("[^\n]+") do
+		if line:find("%S") then
+			local trimmed_line = line:gsub("^%s+", "")
+			local ok, decoded = pcall(vim.json.decode, line)
+			if ok and type(decoded) == "table" then
+				if trimmed_line:sub(1, 1) == "[" then
+					-- A legacy array sharing the file with JSONL lines: take every
+					-- entry it holds rather than discarding the array as unreadable.
+					for _, entry in ipairs(decoded) do
+						if log_entry_id(entry) then
+							out[#out + 1] = entry
+						end
+					end
+				elseif log_entry_id(decoded) then
+					out[#out + 1] = decoded
+				end
+			end
+		end
+	end
+	-- Only migrate when the file is genuinely not JSONL yet AND still yielded
+	-- entries. A file we cannot parse at all is left untouched: truncating it
+	-- would destroy the only copy of the outcomes.
+	local needs_migration = trimmed:sub(1, 1) == "[" and #out > 0
+	return out, needs_migration
+end
+
+---The file's identity, for cache validation. `size`/`mtime` catch an external
+---append; the coarse second-resolution mtime is paired with size because a
+---same-second append changes the size anyway.
+---@return table|nil
+local function log_file_identity(path)
+	local st = vim.uv.fs_stat(path)
+	if not st then
+		return nil
+	end
+	return { size = st.size, mtime = st.mtime and st.mtime.nsec or nil }
+end
+
+---Write `entries` as JSONL, replacing the file atomically via a temp file so a
+---crash cannot leave a half-written log.
+---@param path string
+---@param entries table[]
+---@return boolean ok
+local function write_log_lines(path, entries)
+	local dir = vim.fn.fnamemodify(path, ":h")
+	local ok = pcall(vim.fn.mkdir, dir, "p")
+	if not ok then
+		return false
+	end
+	local tmp = path .. ".tmp"
+	local wrote = pcall(function()
+		local out = assert(io.open(tmp, "w"))
+		for _, entry in ipairs(entries) do
+			out:write(vim.json.encode(entry), "\n")
+		end
+		out:close()
+	end)
+	if not wrote then
+		pcall(os.remove, tmp)
+		return false
+	end
+	local renamed = os.rename(tmp, path)
+	if not renamed then
+		pcall(os.remove, tmp)
+		return false
+	end
+	return true
+end
+
+---Read every decision-log entry from disk, oldest first. Served from a cache
+---validated against the file's identity, so repeated `status`/`list` calls do
+---not re-read and re-decode the whole log.
+---@return table[] entries (a copy: callers may mutate freely)
 function M.read_log_file()
+	return vim.deepcopy(M._read_log_raw())
+end
+
+---The cached entries themselves, without the protective copy. For internal
+---read-only consumers (`_summarize_changes`, `get_persisted_status`), which
+---build fresh tables and must never mutate what they scan.
+---@return table[] entries (the live cache: do not mutate)
+function M._read_log_raw()
 	if not M.log_file then
 		return {}
 	end
-	local f = io.open(M.log_file, "r")
+	local path = M.log_file
+	local identity = log_file_identity(path)
+	local fresh_cache = M._log_cache
+		and M._log_cache_file == path
+		and (
+			(identity == nil and M._log_cache_size == nil)
+			or (identity ~= nil and M._log_cache_size == identity.size and M._log_cache_mtime == identity.mtime)
+		)
+	if fresh_cache then
+		return M._log_cache
+	end
+
+	local f = io.open(path, "r")
 	if not f then
-		return {}
+		M._log_cache, M._log_cache_file = {}, path
+		M._log_cache_size, M._log_cache_mtime = nil, nil
+		return M._log_cache
 	end
 	local raw = f:read("*a")
 	f:close()
-	local ok, decoded = pcall(vim.json.decode, raw)
-	if not ok or type(decoded) ~= "table" then
-		return {}
-	end
-	local out = {}
-	for _, entry in ipairs(decoded) do
-		if type(entry) == "table" and type(entry.id) == "string" then
-			out[#out + 1] = entry
+
+	local entries, needs_migration = decode_log(raw)
+	if needs_migration then
+		if not write_log_lines(path, entries) then
+			pcall(
+				vim.notify,
+				"CodeForge: could not migrate the decision log to JSONL; leaving it as-is",
+				vim.log.levels.WARN
+			)
 		end
 	end
-	return out
+	local fresh = log_file_identity(path)
+	M._log_cache, M._log_cache_file = entries, path
+	M._log_cache_size = fresh and fresh.size or (identity and identity.size) or nil
+	M._log_cache_mtime = fresh and fresh.mtime or (identity and identity.mtime) or nil
+	return M._log_cache
+end
+
+---Drop the cached log (a write, a `log_file` change, or a test reset).
+function M.invalidate_log_cache()
+	M._log_cache = nil
+	M._log_cache_file = nil
+	M._log_cache_size = nil
+	M._log_cache_mtime = nil
 end
 
 ---Ordering key for a change summary: newest first, ties broken by id so the
@@ -400,6 +560,15 @@ end
 ---replaces the outcome it followed.
 ---@return table[] sorted newest-first
 function M.known_changes()
+	return M._summarize_changes(M._read_log_raw())
+end
+
+---Build the summary list from an already-decoded log. Callers that need the
+---total as well as a page pass the entries once, so a single `list` request
+---does not scan or decode the log twice.
+---@param log_entries table[]
+---@return table[] sorted newest-first
+function M._summarize_changes(log_entries)
 	local by_id = {}
 
 	-- Ascending precedence: each source overwrites the previous one wholesale,
@@ -409,7 +578,7 @@ function M.known_changes()
 	end
 
 	-- Persisted log: keep the newest real outcome per id (append-only file).
-	for _, entry in ipairs(M.read_log_file()) do
+	for _, entry in ipairs(log_entries) do
 		if entry.status ~= "reopened" then
 			local seen = by_id[entry.id]
 			if not seen or (entry.timestamp or 0) >= (seen.timestamp or 0) then
@@ -468,7 +637,7 @@ end
 ---@return table|nil
 function M.get_persisted_status(id)
 	local newest
-	for _, entry in ipairs(M.read_log_file()) do
+	for _, entry in ipairs(M._read_log_raw()) do
 		if entry.id == id and entry.status ~= "reopened" then
 			if not newest or (entry.timestamp or 0) >= (newest.timestamp or 0) then
 				newest = entry
@@ -488,33 +657,22 @@ function M.append_log(entry)
 	M.persist_log(entry)
 end
 
----Write-through append of `entry` to `M.log_file` as a JSON array,
----Tolerates a missing/corrupt file (treated as empty).
+---Append `entry` to `M.log_file` as one JSONL line. O(1): the existing file is
+---never read or rewritten, which is what makes a decision cheap regardless of
+---how long the log has grown.
 ---@param entry table
 function M.persist_log(entry)
 	if not M.log_file then
 		return
 	end
-
+	local path = M.log_file
 	local ok, err = pcall(function()
-		local existing = {}
-		local f = io.open(M.log_file, "r")
-		if f then
-			local raw = f:read("*a")
-			f:close()
-			local okd, decoded = pcall(vim.json.decode, raw)
-			if okd and type(decoded) == "table" then
-				existing = decoded
-			end
-		end
-		existing[#existing + 1] = entry
-
-		local dir = vim.fn.fnamemodify(M.log_file, ":h")
-		vim.fn.mkdir(dir, "p")
-		local out = io.open(M.log_file, "w")
-		out:write(vim.json.encode(existing))
+		vim.fn.mkdir(vim.fn.fnamemodify(path, ":h"), "p")
+		local out = assert(io.open(path, "a"))
+		out:write(vim.json.encode(entry), "\n")
 		out:close()
 	end)
+	M.invalidate_log_cache()
 	if not ok then
 		pcall(vim.notify, "CodeForge: failed to persist decision log: " .. tostring(err), vim.log.levels.WARN)
 	end

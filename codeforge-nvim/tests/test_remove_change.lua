@@ -210,45 +210,67 @@ T["state.reset clears the in-memory log"] = function()
 	})
 end
 
-T["removal persists the entry to log_file as a JSON array"] = function()
+T["removal persists the entry to log_file as one JSONL line"] = function()
 	seed({ "a" }, 1)
 	local p = use_temp_logfile()
 	child.lua([[require("codeforge.state").remove_change("a")]])
 
-	local raw = table.concat(vim.fn.readfile(p), "\n")
-	local ok, decoded = pcall(vim.json.decode, raw)
-	MiniTest.expect.equality(ok, true, { fail_reason = "log file should be valid JSON, got " .. raw })
-	MiniTest.expect.equality(#decoded, 1, { fail_reason = "file should hold exactly one entry" })
-	MiniTest.expect.equality(decoded[1].id, "a", { fail_reason = "entry id should be in the file" })
+	local lines = vim.fn.readfile(p)
+	MiniTest.expect.equality(#lines, 1, { fail_reason = "exactly one entry line" })
+	local ok, entry = pcall(vim.json.decode, lines[1])
+	MiniTest.expect.equality(ok, true, { fail_reason = "line should be valid JSON, got " .. lines[1] })
+	MiniTest.expect.equality(entry.id, "a", { fail_reason = "entry id should be in the line" })
 end
 
 T["persistence appends to a pre-existing log file, preserving older entries"] = function()
 	seed({ "a", "b" }, 1)
 	local p = use_temp_logfile()
-	local old = vim.json.encode({ { id = "older", title = "Old", timestamp = 1, status = "rejected", files = {} } })
+	local old = vim.json.encode({ id = "older", title = "Old", timestamp = 1, status = "rejected", files = {} })
 	vim.fn.writefile({ old }, p)
 
 	child.lua([[require("codeforge.state").remove_change("a")]])
 	child.lua([[require("codeforge.state").remove_change("b")]])
 
-	local decoded = vim.json.decode(table.concat(vim.fn.readfile(p), "\n"))
-	MiniTest.expect.equality(#decoded, 3, { fail_reason = "old entry + two new entries" })
-	MiniTest.expect.equality(decoded[1].id, "older", { fail_reason = "pre-existing entry must survive" })
-	MiniTest.expect.equality(decoded[2].id, "a", { fail_reason = "new entries append in order" })
-	MiniTest.expect.equality(decoded[3].id, "b", { fail_reason = "new entries append in order" })
+	local lines = vim.fn.readfile(p)
+	MiniTest.expect.equality(#lines, 3, { fail_reason = "old entry + two new entries" })
+	MiniTest.expect.equality(vim.json.decode(lines[1]).id, "older", { fail_reason = "pre-existing entry must survive" })
+	MiniTest.expect.equality(vim.json.decode(lines[2]).id, "a", { fail_reason = "new entries append in order" })
+	MiniTest.expect.equality(vim.json.decode(lines[3]).id, "b", { fail_reason = "new entries append in order" })
 end
 
-T["a corrupt log file does not break removal; file ends valid"] = function()
+T["a legacy JSON-array log is migrated to JSONL without losing entries"] = function()
+	seed({ "a" }, 1)
+	local p = use_temp_logfile()
+	local legacy = vim.json.encode({
+		{ id = "legacy-1", title = "L1", timestamp = 1, status = "accepted", files = {} },
+		{ id = "legacy-2", title = "L2", timestamp = 2, status = "rejected", files = {} },
+	})
+	vim.fn.writefile({ legacy }, p)
+
+	-- Reading migrates the file in place, keeping order and entries intact.
+	local entries = child.lua_get([[require("codeforge.state").read_log_file()]])
+	MiniTest.expect.equality(#entries, 2)
+	MiniTest.expect.equality(entries[1].id, "legacy-1")
+
+	child.lua([[require("codeforge.state").remove_change("a")]])
+	local lines = vim.fn.readfile(p)
+	MiniTest.expect.equality(#lines, 3, { fail_reason = "migrated entries must survive the next append" })
+	MiniTest.expect.equality(vim.json.decode(lines[1]).id, "legacy-1")
+	MiniTest.expect.equality(vim.json.decode(lines[2]).id, "legacy-2")
+	MiniTest.expect.equality(vim.json.decode(lines[3]).id, "a")
+end
+
+T["a corrupt log line does not break removal; the entry is still appended"] = function()
 	seed({ "a" }, 1)
 	local p = use_temp_logfile()
 	vim.fn.writefile({ "this is not json {{{" }, p)
 
 	local ok = child.lua_get([[require("codeforge.state").remove_change("a")]])
-	MiniTest.expect.equality(ok, true, { fail_reason = "removal must succeed despite corrupt log file" })
+	MiniTest.expect.equality(ok, true, { fail_reason = "removal must succeed despite a corrupt log line" })
 
-	local decoded = vim.json.decode(table.concat(vim.fn.readfile(p), "\n"))
-	MiniTest.expect.equality(#decoded, 1, { fail_reason = "file should recover with the new entry" })
-	MiniTest.expect.equality(decoded[1].id, "a", { fail_reason = "the new entry should be present" })
+	local entries = child.lua_get([[require("codeforge.state").read_log_file()]])
+	MiniTest.expect.equality(#entries, 1, { fail_reason = "the corrupt line must be skipped" })
+	MiniTest.expect.equality(entries[1].id, "a")
 end
 
 T["log_file in a nonexistent directory is created (mkdir -p)"] = function()
