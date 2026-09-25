@@ -302,4 +302,115 @@ T["failure to stat a modified target fails closed rather than assuming it exists
 	MiniTest.expect.equality(reply.error.code, "invalid_proposal")
 end
 
+T["every refused path is named in one reply, not only the first"] = function()
+	local reply = publish_files({
+		modified_file("missing-a.lua"),
+		modified_file("missing-b.lua"),
+		modified_file("missing-c.lua"),
+	})
+	MiniTest.expect.equality(reply.ok, false)
+	MiniTest.expect.equality(reply.error.code, "invalid_proposal")
+	for _, name in ipairs({ "missing-a.lua", "missing-b.lua", "missing-c.lua" }) do
+		MiniTest.expect.equality(reply.error.message:find(name, 1, true) ~= nil, true, {
+			fail_reason = name .. " must be named; got: " .. reply.error.message,
+		})
+	end
+end
+
+T["each refused path keeps its own reason"] = function()
+	-- Distinct causes must stay distinguishable: an agent fixing one problem
+	-- should not have to guess whether the others share it.
+	local reply = publish_files({
+		modified_file("missing.lua"),
+		proposal({ outside .. "/foreign.lua" }).files[1],
+	})
+	MiniTest.expect.equality(reply.ok, false)
+	MiniTest.expect.equality(reply.error.message:find("missing.lua", 1, true) ~= nil, true)
+	MiniTest.expect.equality(reply.error.message:find("must already exist", 1, true) ~= nil, true)
+	MiniTest.expect.equality(
+		reply.error.message:find("outside Neovim working directory", 1, true) ~= nil,
+		true,
+		{ fail_reason = "got: " .. reply.error.message }
+	)
+end
+
+T["paths are reported in request order"] = function()
+	local reply = publish_files({
+		modified_file("zzz-first.lua"),
+		modified_file("aaa-second.lua"),
+	})
+	local msg = reply.error.message
+	local first = msg:find("zzz-first.lua", 1, true)
+	local second = msg:find("aaa-second.lua", 1, true)
+	MiniTest.expect.equality(first ~= nil and second ~= nil, true, { fail_reason = "got: " .. msg })
+	MiniTest.expect.equality(first < second, true, {
+		fail_reason = "message must follow request order, not an incidental sort: " .. msg,
+	})
+end
+
+T["a single refused path keeps its exact original message"] = function()
+	-- Backward compatibility: nothing about the single-failure case changes.
+	local reply = publish_files({ modified_file("solo-missing.lua") })
+	MiniTest.expect.equality(
+		reply.error.message,
+		("path %q: modified target must already exist as a regular file on disk"):format("solo-missing.lua")
+	)
+end
+
+T["a long refusal list stays bounded and states the true count"] = function()
+	-- The error message has a byte budget. Exceeding it must disclose how many
+	-- entries were omitted rather than silently dropping them.
+	local files = {}
+	local n = 60
+	for i = 1, n do
+		files[#files + 1] = modified_file(("missing-%03d-with-a-deliberately-long-name.lua"):format(i))
+	end
+	local reply = publish_files(files)
+	MiniTest.expect.equality(reply.ok, false)
+	MiniTest.expect.equality(reply.error.code, "invalid_proposal")
+	local msg = reply.error.message
+	MiniTest.expect.equality(#msg <= 4096, true, {
+		fail_reason = "the message must stay within the 4096-byte cap, got " .. #msg,
+	})
+	MiniTest.expect.equality(msg:find(tostring(n), 1, true) ~= nil, true, {
+		fail_reason = "the true failure count must appear, got: " .. msg:sub(1, 160),
+	})
+	MiniTest.expect.equality(msg:find("more", 1, true) ~= nil, true, {
+		fail_reason = "omitted entries must be disclosed, got tail: " .. msg:sub(-160),
+	})
+end
+
+T["a multi-path refusal admits nothing and allocates no identity"] = function()
+	child.lua([[
+		local state = require("codeforge.state")
+		state.set_on_change(function() error("a refusal must not refresh the sidebar") end)
+		vim.uv.random = function() error("a refusal must not allocate an identity") end
+	]])
+	local reply = publish_files({ modified_file("m1.lua"), modified_file("m2.lua") })
+	MiniTest.expect.equality(reply.ok, false)
+	MiniTest.expect.equality(child.lua_get([[#require("codeforge.state").changes]]), 0)
+	MiniTest.expect.equality(child.lua_get([[#require("codeforge.state").log]]), 0)
+	MiniTest.expect.equality(child.fn.filereadable(root .. "/m1.lua"), 0)
+	MiniTest.expect.equality(child.fn.filereadable(root .. "/m2.lua"), 0)
+end
+
+T["several paths already under review are all named at once"] = function()
+	local first = receive({ "tracked-a.lua", "tracked-b.lua" })
+	MiniTest.expect.equality(first.ok, true)
+	local reply = publish_files({
+		proposal({ "tracked-a.lua" }).files[1],
+		proposal({ "tracked-b.lua" }).files[1],
+	})
+	MiniTest.expect.equality(reply.ok, false)
+	MiniTest.expect.equality(reply.error.message:find("tracked-a.lua", 1, true) ~= nil, true, {
+		fail_reason = "got: " .. reply.error.message,
+	})
+	MiniTest.expect.equality(reply.error.message:find("tracked-b.lua", 1, true) ~= nil, true, {
+		fail_reason = "got: " .. reply.error.message,
+	})
+	MiniTest.expect.equality(child.lua_get([[#require("codeforge.state").changes]]), 1, {
+		fail_reason = "the refusal must not admit a second change",
+	})
+end
+
 return T

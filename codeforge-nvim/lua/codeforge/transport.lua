@@ -324,6 +324,32 @@ local function canonical_path(path)
 	end
 end
 
+---Render collected per-path refusals as one error message.
+---@param messages string[] ordered, one per refused path
+---@return string message
+local function format_failures(messages)
+	if #messages == 1 then
+		return messages[1]
+	end
+	local budget = require("codeforge.protocol").MAX_ERROR_BYTES
+	local parts = { ("%d paths were refused:"):format(#messages) }
+	local used = #parts[1]
+	local shown = 0
+	for _, message in ipairs(messages) do
+		local line = "\n  " .. message
+		if shown > 0 and used + #line > budget - 48 then
+			break
+		end
+		parts[#parts + 1] = line
+		used = used + #line
+		shown = shown + 1
+	end
+	if shown < #messages then
+		parts[#parts + 1] = ("\n  ... and %d more"):format(#messages - shown)
+	end
+	return table.concat(parts)
+end
+
 ---Publish a new change into `state.changes`; never replace an existing change.
 ---@param cs table publish request without change/file/hunk ids
 ---@return boolean ok
@@ -343,41 +369,60 @@ function M.receive(cs)
 		return false, "cannot resolve Neovim working directory for file paths"
 	end
 	root = vim.fs.normalize(root)
+
+	local failures = {}
+	local function refuse(message)
+		failures[#failures + 1] = message
+	end
+
 	local incoming, paths = {}, {}
 	for i, file in ipairs(cs.files) do
 		local path = vim.fs.normalize(vim.fn.fnamemodify(file.path, ":p"))
+		local canonical
+		local ok = false
 		if not within(path, cwd) then
-			return false, ("path %q is outside Neovim working directory %q"):format(file.path, cwd)
-		end
-		path = canonical_path(path)
-		if not path then
-			return false,
-				("path %q cannot be safely resolved within Neovim working directory %q"):format(file.path, cwd)
-		end
-		if not within(path, root) then
-			return false, ("path %q resolves outside Neovim working directory %q"):format(file.path, cwd)
-		end
-		if file.status == "modified" then
-			local stat = vim.uv.fs_stat(path)
-			if not stat or stat.type ~= "file" then
-				return false,
-					("path %q: modified target must already exist as a regular file on disk"):format(file.path)
+			refuse(("path %q is outside Neovim working directory %q"):format(file.path, cwd))
+		else
+			canonical = canonical_path(path)
+			if not canonical then
+				refuse(("path %q cannot be safely resolved within Neovim working directory %q"):format(file.path, cwd))
+			elseif not within(canonical, root) then
+				refuse(("path %q resolves outside Neovim working directory %q"):format(file.path, cwd))
+			elseif file.status == "modified" then
+				local stat = vim.uv.fs_stat(canonical)
+				if not stat or stat.type ~= "file" then
+					refuse(("path %q: modified target must already exist as a regular file on disk"):format(file.path))
+				else
+					ok = true
+				end
+			else
+				ok = true
 			end
 		end
-		paths[i] = path
-		incoming[path] = file.path
+		if ok then
+			paths[i] = canonical
+			incoming[canonical] = file.path
+		end
 	end
-	for _, change in ipairs(state.changes) do
-		for _, file in ipairs(change.files or {}) do
-			local path = vim.fs.normalize(vim.fn.fnamemodify(file.path, ":p"))
-			if incoming[path] then
-				return false,
-					("path %q is already tracked by pending change %q; resolve it before re-sending"):format(
-						incoming[path],
-						change.id
+
+	if #failures == 0 then
+		for _, change in ipairs(state.changes) do
+			for _, file in ipairs(change.files or {}) do
+				local path = vim.fs.normalize(vim.fn.fnamemodify(file.path, ":p"))
+				if incoming[path] then
+					refuse(
+						("path %q is already tracked by pending change %q; resolve it before re-sending"):format(
+							incoming[path],
+							change.id
+						)
 					)
+				end
 			end
 		end
+	end
+
+	if #failures > 0 then
+		return false, format_failures(failures)
 	end
 
 	local change = vim.deepcopy(cs)

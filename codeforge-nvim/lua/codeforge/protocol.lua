@@ -1,8 +1,19 @@
 ---CodeForge's data-only wire API. Never dispatch a caller-provided function name.
 local M = {}
 
+---Maximum bytes for an error message on the wire.
+---
+---A publish can refuse many paths at once, and admission is all-or-nothing, so
+---the reply has to be able to name them all. The cap is a bound on the frame,
+---not a promise that every refusal fits.
+M.MAX_ERROR_BYTES = 4096
+
 function M.error(code, message)
-	return { ok = false, error = { code = code, message = message:sub(1, 512) } }
+	local text = tostring(message)
+	if #text > M.MAX_ERROR_BYTES then
+		text = text:sub(1, M.MAX_ERROR_BYTES - 1) .. "…"
+	end
+	return { ok = false, error = { code = code, message = text } }
 end
 
 local function keys_allowed(value, allowed, context)
