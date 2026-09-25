@@ -410,4 +410,56 @@ T["reject_pending sweeps conflicted hunks back to the user's version (U)"] = fun
 	)
 end
 
+-- ── The change-scoped sweep keys must exist in the review buffer ────────
+
+T["<C-x>A in the review buffer sweeps instead of falling through to Ctrl-X"] = function()
+	local O = { "local a = 1", "local b = 2" }
+	local path = F.tmp_path()
+	child.fn.writefile(O, path)
+	child.cmd("edit " .. path)
+	F.seed_change(path, O, { F.replace_hunk("h1", 2, "local b = 2", "local b = 20") })
+
+	local buf = open_review(path)
+	child.api.nvim_win_set_cursor(0, { 1, 12 })
+	MiniTest.expect.equality(
+		child.api.nvim_get_option_value("nrformats", {}) ~= "",
+		true,
+		{ fail_reason = "precondition: the cursor line is a number Ctrl-X could decrement" }
+	)
+
+	child.type_keys("<C-x>A")
+	child.lua([[vim.wait(200)]])
+
+	MiniTest.expect.equality(hunk_status(path, "h1"), "accepted", {
+		fail_reason = "<C-x>A in the review buffer must accept the pending hunks",
+	})
+	MiniTest.expect.equality(
+		buf_lines(path)[1],
+		"local a = 1",
+		{ fail_reason = "Ctrl-X must not have decremented the line, got " .. vim.inspect(buf_lines(path)[1]) }
+	)
+end
+
+T["<C-x>J in the review buffer sweeps instead of falling through"] = function()
+	local O = { "local a = 1", "local b = 2" }
+	local path = F.tmp_path()
+	child.fn.writefile(O, path)
+	child.cmd("edit " .. path)
+	F.seed_change(path, O, { F.replace_hunk("h1", 2, "local b = 2", "local b = 20") })
+
+	local buf = open_review(path)
+	child.api.nvim_win_set_cursor(0, { 1, 12 })
+	child.type_keys("<C-x>J")
+	child.lua([[vim.wait(200)]])
+
+	MiniTest.expect.equality(hunk_status(path, "h1"), "rejected", {
+		fail_reason = "<C-x>J in the review buffer must reject the pending hunks",
+	})
+	MiniTest.expect.equality(
+		buf_lines(path)[1],
+		"local a = 1",
+		{ fail_reason = "Ctrl-X must not have edited the line, got " .. vim.inspect(buf_lines(path)[1]) }
+	)
+end
+
 return T

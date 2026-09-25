@@ -118,7 +118,7 @@ end
 ---@field region_mark integer? extmark id anchoring a resolved hunk's region
 ---@field region_len integer? number of buffer lines in the resolved region
 ---@field region_row integer? the resolved region's 0-indexed start row
----@field emptied table? { anchor_row = integer }
+---@field emptied table? { anchor_row = integer, expected = table[]? }
 ---@field emptied_mark integer? extmark id for the emptied anchor
 ---@field region_start integer 1-indexed start of the hunk's region in O
 ---@field region_count integer number of O lines in the hunk's region
@@ -293,6 +293,125 @@ function Review:_emptied_anchor_row(old_adds, rows, buf_lines)
 		best = (type(prev) == "number" and prev) or 0
 	end
 	return math.max(0, math.min(best, math.max(0, #buf_lines - 1)))
+end
+
+---Reconcile a pending placement's sign marks with the live buffer: drop signs
+---whose line was deleted, re-anchor signs whose content moved, and adopt
+---in-place amendments.
+---@param self Review
+---@param p Placement
+---@param rows table<integer, integer|false> baseline row -> live row (false = deleted)
+---@param buf_lines string[]
+---@return boolean changed
+function Review:_reconcile_signs(p, rows, buf_lines)
+	local changed = false
+	local kept_adds, kept_kinds, kept_contents, kept_marks = {}, {}, {}, {}
+	for i, mark in ipairs(p.sign_marks) do
+		local expected = p.add_contents and p.add_contents[i]
+		local old_row = p.adds and p.adds[i]
+		local row = self:_row_of(mark)
+		local drop = false
+		local new_row = old_row
+
+		if mark and expected ~= nil and not (row ~= nil and buf_lines[row + 1] == expected) then
+			local mapped = old_row ~= nil and rows[old_row] or nil
+			if mapped == false or mapped == nil then
+				drop = true
+			else
+				new_row = mapped
+			end
+			vim.api.nvim_buf_del_extmark(self.buf, diff.namespace, mark)
+			mark = nil
+			changed = true
+		end
+
+		if drop then
+		else
+			kept_adds[#kept_adds + 1] = new_row
+			kept_kinds[#kept_kinds + 1] = p.kinds and p.kinds[i] or nil
+			local content = expected
+			if mark == nil and new_row ~= nil and buf_lines[new_row + 1] ~= nil then
+				content = buf_lines[new_row + 1]
+			end
+			kept_contents[#kept_contents + 1] = content
+			kept_marks[#kept_marks + 1] = mark
+		end
+	end
+	p.adds = kept_adds
+	p.kinds = kept_kinds
+	p.add_contents = kept_contents
+	p.sign_marks = kept_marks
+	return changed
+end
+
+---Remember a pending hunk's proposal rows and text, so a later undo that brings
+---deleted lines back can re-detect them (`_recover_emptied`).
+---@param old_adds integer[] baseline rows of the hunk's lines
+---@param old_contents string[] the text of each row, when known
+---@param old_kinds string[] per-row "added"|"modified"|"context"
+---@return table[] expected { row = integer, text = string, kind = string? }
+function Review:_expected_rows(old_adds, old_contents, old_kinds)
+	local out = {}
+	for i, row in ipairs(old_adds) do
+		local text = old_contents[i]
+		if text ~= nil then
+			out[#out + 1] = { row = row, text = text, kind = old_kinds[i] }
+		end
+	end
+	return out
+end
+
+---Recover a hunk whose lines an undo brought back.
+---@param self Review
+---@param p Placement
+---@param buf_lines string[]
+---@return boolean recovered
+function Review:_recover_emptied(p, buf_lines)
+	local expected = p.emptied and p.emptied.expected
+	if not expected or #expected == 0 or #buf_lines == 0 then
+		return false
+	end
+	local anchor = self:_emptied_row(p)
+	if anchor == nil then
+		return false
+	end
+
+	local want = expected[1].text
+	local first
+	for delta = 0, #buf_lines do
+		for _, probe in ipairs({ anchor + 1 - delta, anchor + 2 + delta }) do
+			if probe >= 1 and probe <= #buf_lines and buf_lines[probe] == want then
+				first = probe
+				break
+			end
+		end
+		if first then
+			break
+		end
+	end
+	if first == nil then
+		return false
+	end
+
+	local adds, contents, kinds = {}, {}, {}
+	for k, item in ipairs(expected) do
+		local row = first + (k - 1) -- 1-indexed
+		if buf_lines[row] ~= item.text then
+			break
+		end
+		adds[#adds + 1] = row - 1 -- stored 0-indexed, like apply_hunks
+		contents[#contents + 1] = item.text
+		kinds[#kinds + 1] = item.kind or "modified"
+	end
+	if #adds == 0 then
+		return false
+	end
+
+	p.adds = adds
+	p.add_contents = contents
+	p.kinds = kinds
+	p.emptied, p.emptied_mark = nil, nil
+	return true
 end
 
 ---@param self Review
@@ -1487,6 +1606,12 @@ function Review:setup_keymaps()
 	map(cfg.redo, function()
 		require("codeforge.sidebar.actions").redo()
 	end, "CodeForge: redo review action")
+	map(cfg.accept_pending, function()
+		require("codeforge.sidebar.actions").accept_pending()
+	end, "CodeForge: accept all pending hunks in this change")
+	map(cfg.reject_pending, function()
+		require("codeforge.sidebar.actions").reject_pending()
+	end, "CodeForge: reject all pending hunks in this change")
 	map(cfg.next_hunk, function()
 		self:next_hunk()
 	end, "CodeForge: next hunk")
@@ -1637,66 +1762,34 @@ function Review:_reconcile()
 	end
 
 	local buf_lines = vim.api.nvim_buf_get_lines(self.buf, 0, -1, false)
-	-- A row whose content changed was amended in place (the hunk stays pending
-	-- and adopts the new text); a row that is gone was deleted (drop its sign).
 	local rows = merge.row_map(self._baseline_lines or buf_lines, buf_lines)
 	local changed = false
 	for _, p in ipairs(self.placements) do
 		local st = self.hunk_status[p.hunk_id]
 		if st ~= "accepted" and st ~= "rejected" and p.sign_marks then
-			local old_adds = vim.deepcopy(p.adds or {})
-			local kept_adds, kept_kinds, kept_contents, kept_marks = {}, {}, {}, {}
-			for i, mark in ipairs(p.sign_marks) do
-				local expected = p.add_contents and p.add_contents[i]
-				local old_row = p.adds and p.adds[i]
-				local row = self:_row_of(mark)
-				local drop = false
-				local new_row = old_row
-
-				if mark and expected ~= nil and not (row ~= nil and buf_lines[row + 1] == expected) then
-					-- The sign drifted or its line was rewritten. Only a *deleted*
-					-- baseline row maps to false; an amended row keeps its hunk.
-					local mapped = old_row ~= nil and rows[old_row] or nil
-					if mapped == false or mapped == nil then
-						drop = true
-					else
-						new_row = mapped
-					end
-					-- Re-anchor on the row the content now lives on (render rebuilds
-					-- the extmark). Untouched rows keep their mark so it can track
-					-- the content across unrelated insertions above.
-					vim.api.nvim_buf_del_extmark(self.buf, diff.namespace, mark)
-					mark = nil
-					changed = true
-				end
-
-				if drop then
-					-- skip: this line left the hunk
-				else
-					kept_adds[#kept_adds + 1] = new_row
-					kept_kinds[#kept_kinds + 1] = p.kinds and p.kinds[i] or nil
-					local content = expected
-					if mark == nil and new_row ~= nil and buf_lines[new_row + 1] ~= nil then
-						content = buf_lines[new_row + 1]
-					end
-					kept_contents[#kept_contents + 1] = content
-					kept_marks[#kept_marks + 1] = mark
-				end
-			end
-			p.adds = kept_adds
-			p.kinds = kept_kinds
-			p.add_contents = kept_contents
-			p.sign_marks = kept_marks
-
-			local has_lines = #kept_adds > 0 or p.fold ~= nil
-			if has_lines then
-				if p.emptied then
-					p.emptied, p.emptied_mark = nil, nil
-					changed = true
-				end
-			elseif not p.emptied then
-				p.emptied = { anchor_row = self:_emptied_anchor_row(old_adds, rows, buf_lines) }
+			local recovered = p.emptied and self:_recover_emptied(p, buf_lines)
+			if recovered then
 				changed = true
+			else
+				local old_adds = vim.deepcopy(p.adds or {})
+				local old_contents = vim.deepcopy(p.add_contents or {})
+				local old_kinds = vim.deepcopy(p.kinds or {})
+				if self:_reconcile_signs(p, rows, buf_lines) then
+					changed = true
+				end
+				local has_lines = #(p.adds or {}) > 0 or p.fold ~= nil
+				if has_lines then
+					if p.emptied then
+						p.emptied, p.emptied_mark = nil, nil
+						changed = true
+					end
+				elseif not p.emptied then
+					p.emptied = {
+						anchor_row = self:_emptied_anchor_row(old_adds, rows, buf_lines),
+						expected = self:_expected_rows(old_adds, old_contents, old_kinds),
+					}
+					changed = true
+				end
 			end
 		end
 	end
@@ -1725,6 +1818,8 @@ function Review:_teardown_keymaps()
 		cfg.dismiss,
 		cfg.undo,
 		cfg.redo,
+		cfg.accept_pending,
+		cfg.reject_pending,
 		cfg.next_hunk,
 		cfg.prev_hunk,
 		cfg.toggle_hunk_diff,

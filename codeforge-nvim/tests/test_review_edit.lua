@@ -396,6 +396,114 @@ T["next_hunk reaches a fully emptied hunk"] = function()
 	})
 end
 
+-- ── Undoing a buffer edit must re-arm the hunk ───────────────────────────
+
+T["undoing a deletion restores the hunk's sign"] = function()
+	local O = { "a", "b", "c" }
+	local path = F.tmp_path()
+	child.fn.writefile(O, path)
+	child.cmd("edit " .. path)
+	F.seed_change(path, O, { F.replace_hunk("h1", 2, "b", "B") })
+
+	local buf = open_review(path)
+	local n = child.lua_get([[require("codeforge.review.diff").namespace]])
+
+	child.api.nvim_buf_set_lines(buf, 1, 2, false, {})
+	child.lua([[vim.wait(400)]])
+	MiniTest.expect.equality(Q.sign_at(buf, n, 1) ~= nil, true, {
+		fail_reason = "precondition: the emptied hunk keeps its marker",
+	})
+
+	child.lua(
+		string.format([[vim.api.nvim_buf_call(vim.fn.bufnr(%s), function() vim.cmd("undo") end)]], vim.inspect(path))
+	)
+	child.lua([[vim.wait(400)]])
+
+	Q.expect_lines("after undo", child.api.nvim_buf_get_lines(buf, 0, -1, false), { "a", "B", "c" })
+	local sign = Q.sign_at(buf, n, 1)
+	MiniTest.expect.equality(sign ~= nil, true, {
+		fail_reason = "the restored line must carry a sign again, got " .. vim.inspect(sign),
+	})
+	MiniTest.expect.equality(sign.sign_hl_group, "CodeForgeHunkModified", {
+		fail_reason = "the restored sign must have its Modified styling again",
+	})
+	-- And the placement must no longer describe itself as emptied.
+	MiniTest.expect.equality(
+		child.lua_get(
+			string.format([[require("codeforge.state").get_review(%s).placements[1].emptied ~= nil]], vim.inspect(path))
+		),
+		false,
+		{ fail_reason = "the hunk is no longer emptied, so its anchor must be cleared" }
+	)
+end
+
+T["undoing a multi-line deletion restores every sign"] = function()
+	local O = { "a", "x", "y", "b" }
+	local path = F.tmp_path()
+	child.fn.writefile(O, path)
+	child.cmd("edit " .. path)
+	F.seed_change(path, O, {
+		{ id = "hm", old_start = 2, old_lines = 2, new_start = 2, new_lines = 2, lines = { "-x", "-y", "+X", "+Y" } },
+	})
+
+	local buf = open_review(path)
+	local n = child.lua_get([[require("codeforge.review.diff").namespace]])
+
+	-- Delete both changed lines (row idx 1 then the now-first row idx 1 again).
+	child.api.nvim_buf_set_lines(buf, 1, 3, false, {})
+	child.lua([[vim.wait(400)]])
+	MiniTest.expect.equality(Q.sign_at(buf, n, 1) ~= nil, true, {
+		fail_reason = "precondition: the emptied hunk keeps its marker",
+	})
+
+	child.lua(
+		string.format([[vim.api.nvim_buf_call(vim.fn.bufnr(%s), function() vim.cmd("undo") end)]], vim.inspect(path))
+	)
+	child.lua([[vim.wait(400)]])
+
+	Q.expect_lines("after undo", child.api.nvim_buf_get_lines(buf, 0, -1, false), { "a", "X", "Y", "b" })
+	-- Both restored lines must be signed again (the hunk is still pending).
+	MiniTest.expect.equality(Q.sign_at(buf, n, 1) ~= nil, true, { fail_reason = "row X must be signed" })
+	MiniTest.expect.equality(Q.sign_at(buf, n, 2) ~= nil, true, { fail_reason = "row Y must be signed" })
+end
+
+T["an undo-restored hunk accepts back to the proposal"] = function()
+	-- The user-visible consequence: with a stale emptied placement, accepting
+	-- after an undo emitted nothing (the assembled region was empty, yet the
+	-- hunk was marked accepted), silently dropping the proposal.
+	local O = { "a", "x", "y", "b" }
+	local path = F.tmp_path()
+	child.fn.writefile(O, path)
+	child.cmd("edit " .. path)
+	F.seed_change(path, O, {
+		{ id = "hm", old_start = 2, old_lines = 2, new_start = 2, new_lines = 2, lines = { "-x", "-y", "+X", "+Y" } },
+	})
+
+	local buf = open_review(path)
+	-- delete both changed lines, then undo the deletion
+	child.api.nvim_buf_set_lines(buf, 1, 3, false, {})
+	child.lua([[vim.wait(400)]])
+	child.lua(
+		string.format([[vim.api.nvim_buf_call(vim.fn.bufnr(%s), function() vim.cmd("undo") end)]], vim.inspect(path))
+	)
+	child.lua([[vim.wait(400)]])
+
+	child.lua(string.format(
+		[[
+                local r = require("codeforge.state").get_review(%s)
+                r:accept_hunk(r:hunk_row("hm") - 1)
+        ]],
+		vim.inspect(path)
+	))
+
+	MiniTest.expect.equality(F.hunk_outcome(path, "hm"), "accepted", {
+		fail_reason = "the hunk must be accepted",
+	})
+	Q.expect_lines("after accept", child.api.nvim_buf_get_lines(buf, 0, -1, false), { "a", "X", "Y", "b" }, {
+		fail_reason = "accepting a restored hunk must keep the proposal, not drop it",
+	})
+end
+
 T["editing a context line does not make an untouched hunk appear amended"] = function()
 	local O = { "a", "b", "c" }
 	local path = F.tmp_path()
