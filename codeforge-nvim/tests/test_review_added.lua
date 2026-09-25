@@ -77,7 +77,7 @@ for _, case in ipairs({
 	T[case.name .. " of a new-file hunk completes and undo/redo restores both levels"] = function()
 		local path = open_added({ "proposal" })
 		local buf = child.lua_get([[review.buf]])
-		local on_disk = case.status == "accepted" and 0 or 0
+		local on_disk = case.status == "accepted" and 1 or 0
 		child.type_keys(case.key)
 		MiniTest.expect.equality(child.lua_get([[file.decision]]), case.status)
 		MiniTest.expect.equality(child.lua_get([[#require("codeforge.state").changes]]), 0)
@@ -151,7 +151,9 @@ T["accepting a new file preserves actual pre-review unsaved content"] = function
 		child.api.nvim_buf_get_lines(child.lua_get([[review.buf]]), 0, -1, false),
 		{ "proposal", "unsaved user content" }
 	)
-	MiniTest.expect.equality(child.fn.filereadable(path), 0)
+	MiniTest.expect.equality(child.fn.filereadable(path), 1, {
+		fail_reason = "an accepted new file must exist on disk",
+	})
 	MiniTest.expect.equality(
 		child.fn.readfile(path),
 		{ "proposal", "unsaved user content" },
