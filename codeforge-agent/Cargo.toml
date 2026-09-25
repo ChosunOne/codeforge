@@ -1,0 +1,16 @@
+[package]
+name = "codeforge-agent"
+version = "0.1.0"
+edition = "2024"
+description = "CLI for publishing change sets to and reading review outcomes from a running CodeForge editor"
+publish = false
+
+[[bin]]
+name = "codeforge"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "^1", features = ["derive"] }
+serde_json = "^1"
+
+[dev-dependencies]

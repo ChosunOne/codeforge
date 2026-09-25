@@ -1,0 +1,10 @@
+# Fail fast: an agent-loop tool hanging is worse than failing, and a wedged
+# test should never cost minutes of wall time again.
+[profile.default]
+slow-timeout = { period = "20s", terminate-after = 2 }
+fail-fast = false
+
+[[profile.default.overrides]]
+# The timeout behaviour test intentionally waits on a deadline.
+filter = "test(a_server_that_never_replies_times_out)"
+slow-timeout = { period = "10s", terminate-after = 1 }
