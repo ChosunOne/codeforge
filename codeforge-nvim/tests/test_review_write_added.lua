@@ -330,4 +330,56 @@ T["saving a modified file never creates directories"] = function()
 	})
 end
 
+T["saving a new file during review, then accepting, is not a refused accept"] = function()
+	local base = absent_dir()
+	local path = base .. "/saved/newfile.lua"
+	open_added(path, { "content" })
+
+	local res = child.lua_get([[ (function()
+		local ok, err = pcall(vim.api.nvim_buf_call, review.buf, function() vim.cmd("write") end)
+		return { ok = ok, err = tostring(err) }
+	end)() ]])
+	MiniTest.expect.equality(
+		res.ok,
+		true,
+		{ fail_reason = "precondition: the save must succeed, got " .. tostring(res.err) }
+	)
+	MiniTest.expect.equality(read_disk(path), { "content" }, {
+		fail_reason = "precondition: saving a new file during review writes it",
+	})
+
+	child.type_keys("<C-x>a")
+
+	local failures = child.lua_get([[file.failures or {}]])
+	MiniTest.expect.equality(failures, {}, {
+		fail_reason = "accepting a file the review already wrote must not report a refusal, got "
+			.. vim.inspect(failures),
+	})
+	MiniTest.expect.equality(child.lua_get([[file.decision]]), "accepted")
+	MiniTest.expect.equality(read_disk(path), { "content" })
+end
+
+T["undoing an accept after such a save removes the file rather than resurrecting it"] = function()
+	-- The other half of the fix: once the save guard records what it created,
+	-- undo must remove that file (it is ours) and redo must bring it back.
+	local base = absent_dir()
+	local path = base .. "/saved2/newfile.lua"
+	open_added(path, { "content" })
+
+	child.lua([[vim.api.nvim_buf_call(review.buf, function() vim.cmd("write") end)]])
+	MiniTest.expect.equality(read_disk(path), { "content" })
+
+	child.type_keys("<C-x>a")
+	child.lua([[require("codeforge.sidebar.actions").undo()]])
+
+	MiniTest.expect.equality(child.fn.filereadable(path), 0, {
+		fail_reason = "undo must remove a file CodeForge wrote during review and then accepted",
+	})
+
+	child.lua([[require("codeforge.sidebar.actions").redo()]])
+	MiniTest.expect.equality(read_disk(path), { "content" }, {
+		fail_reason = "redo must recreate it",
+	})
+end
+
 return T

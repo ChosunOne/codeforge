@@ -149,6 +149,29 @@ function M.remove_created(info)
 	return removed
 end
 
+---The `created` record for a file that already exists on disk, with the
+---directories an ancestor walk reaches. Used by the review save guard, whose
+---`write!` created the file through Vim's own machinery rather than through
+---`create_file`, so there is no return value to reuse.
+---@param path string
+---@param made_dirs boolean
+---@return table info { path = canonical path, dirs = candidate dir paths }
+function M.describe_created(path, made_dirs)
+	local dirs = {}
+	if made_dirs then
+		local dir = vim.fs.dirname(path)
+		while dir and dir ~= "" and dir ~= "." do
+			dirs[#dirs + 1] = dir
+			local parent = vim.fs.dirname(dir)
+			if parent == dir then
+				break
+			end
+			dir = parent
+		end
+	end
+	return { path = canonical(path), dirs = dirs }
+end
+
 ---The failure reason recorded when an accept cannot create its file.
 M.OVERWRITE_REASON = "target already exists on disk; refusing to overwrite"
 

@@ -26,17 +26,25 @@ local function find_file(path)
 	return nil
 end
 
+---Record a path this guard wrote as CodeForge-created, so a later accept knows
+---the file is ours rather than a foreign path to refuse.
+---@param path string
+---@param created_dirs boolean whether this write may have made directories
+local function record_created(path, created_dirs)
+	local change = require("codeforge.state").change_for_path(path)
+	for _, file in ipairs(change and change.files or {}) do
+		if file.path == path and file.status == "added" then
+			file.created = require("codeforge.review.fs").describe_created(path, created_dirs)
+			return
+		end
+	end
+end
+
 ---Take over saving for a review buffer with `buftype=acwrite`.
 ---
 ---Snapshots the disk state on attach and again after every successful write, so
 ---consecutive normal saves during review are allowed while an external change to
----disk is refused. `opts` carries the buffer options captured before the review
----changed them, so `detach_save_guard` can restore them.
----
----`creates` marks a review of a file that does not exist yet (an `added` file):
----saving one creates its parent directories first, since a new file in a missing
----directory otherwise fails at `:w` with E212 and the directories would have to
----be made by hand.
+---disk is refused.
 ---@param buf integer
 ---@param path string
 ---@param opts? table captured buffer options
@@ -63,6 +71,8 @@ local function attach_save_guard(buf, path, opts, creates)
 		callback = function(args)
 			local name = vim.api.nvim_buf_get_name(args.buf)
 			local lines = vim.api.nvim_buf_get_lines(args.buf, 0, -1, false)
+			local was_absent = vim.fn.filereadable(name) == 0
+			local parents_may_be_new = was_absent and vim.fn.isdirectory(vim.fs.dirname(name)) ~= 1
 			local disk = vim.fn.filereadable(name) == 1 and vim.fn.readfile(name) or nil
 			local disk_untouched = disk == nil or (snapshot ~= nil and vim.deep_equal(disk, snapshot))
 			if not disk_untouched and not vim.deep_equal(disk, lines) then
@@ -99,9 +109,11 @@ local function attach_save_guard(buf, path, opts, creates)
 			if vim.api.nvim_buf_is_valid(args.buf) then
 				vim.bo[args.buf].buftype = prev_buftype
 			end
-			-- advance the snapshot only once the file actually hit disk
 			if wok and vim.fn.filereadable(name) == 1 then
 				snapshot = vim.fn.readfile(name)
+				if creates and was_absent then
+					record_created(name, parents_may_be_new)
+				end
 			end
 			if not pre_ok then
 				error(tostring(pre_err), 0)
