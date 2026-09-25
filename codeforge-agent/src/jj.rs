@@ -35,6 +35,12 @@ pub struct BuildOptions {
     ///A plain prefix match on this string, so `pkg/` selects `pkg/…` without
     ///also selecting a sibling named `pkgx`.
     pub path_filter: Option<String>,
+    ///Repo-relative prefixes to drop from the proposal.
+    ///
+    ///Needed because a path can be part of the diff yet not publishable: a
+    ///receiver whose checkout lacks a file requires an `added` publish, and
+    ///documentation is often deliberately kept out of review.
+    pub excludes: Vec<String>,
 }
 
 ///Why building a proposal failed.
@@ -225,6 +231,9 @@ pub fn build_proposal(opts: &BuildOptions) -> Result<Proposal, BuildError> {
             if !path.starts_with(filter.as_str()) {
                 continue;
             }
+        }
+        if opts.excludes.iter().any(|e| path.starts_with(e.as_str())) {
+            continue;
         }
         check_path(&path)?;
         let old = show(&opts.repo, &opts.from, &path)?;

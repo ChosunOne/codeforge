@@ -72,7 +72,8 @@ Usage:
   codeforge status --id ID [--wait] [--timeout SECS] [--socket PATH]
   codeforge list [--limit N] [--cursor C] [--socket PATH]
   codeforge publish --repo PATH --from REV --to REV [--path PREFIX]
-                    [--title TITLE] [--socket PATH] [--dry-run]
+                    [--exclude PREFIX]... [--title TITLE] [--socket PATH]
+                    [--dry-run]
 
 Socket resolution: --socket, then $CODEFORGE_SOCKET, then the platform default.
 
@@ -84,12 +85,20 @@ Exit codes: 0 ok, 1 failure, 2 usage, 3 still awaiting review (status --wait)."
 struct Flags {
     values: std::collections::HashMap<String, String>,
     bools: std::collections::HashSet<String>,
+    repeated: std::collections::HashMap<String, Vec<String>>,
 }
 
 impl Flags {
-    fn parse(args: &[String], bool_flags: &[&str]) -> Result<Self, String> {
+    ///`repeated_flags` may be given more than once and accumulate.
+    fn parse(
+        args: &[String],
+        bool_flags: &[&str],
+        repeated_flags: &[&str],
+    ) -> Result<Self, String> {
         let mut values = std::collections::HashMap::new();
         let mut bools = std::collections::HashSet::new();
+        let mut repeated: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
         let mut i = 0;
         while i < args.len() {
             let arg = &args[i];
@@ -104,14 +113,29 @@ impl Flags {
             let value = args
                 .get(i + 1)
                 .ok_or_else(|| format!("--{name} needs a value"))?;
+            if repeated_flags.contains(&name) {
+                repeated
+                    .entry(name.to_string())
+                    .or_default()
+                    .push(value.clone());
+            }
             values.insert(name.to_string(), value.clone());
             i += 2;
         }
-        Ok(Flags { values, bools })
+        Ok(Flags {
+            values,
+            bools,
+            repeated,
+        })
     }
 
     fn get(&self, name: &str) -> Option<&str> {
         self.values.get(name).map(|s| s.as_str())
+    }
+
+    ///Every value given for a repeatable flag, in order.
+    fn all(&self, name: &str) -> Vec<String> {
+        self.repeated.get(name).cloned().unwrap_or_default()
     }
 
     fn required(&self, name: &str) -> Result<&str, String> {
@@ -145,7 +169,7 @@ fn parse<T: for<'de> serde::Deserialize<'de>>(frame: &[u8]) -> Result<T, String>
 }
 
 fn cmd_info(args: &[String]) -> Result<u8, String> {
-    let flags = Flags::parse(args, &[])?;
+    let flags = Flags::parse(args, &[], &[])?;
     let sock = flags.socket();
     let info: Info = parse(&call(&sock, &Request::Info)?)?;
     println!("cwd:     {}", info.cwd);
@@ -155,7 +179,7 @@ fn cmd_info(args: &[String]) -> Result<u8, String> {
 }
 
 fn cmd_list(args: &[String]) -> Result<u8, String> {
-    let flags = Flags::parse(args, &[])?;
+    let flags = Flags::parse(args, &[], &[])?;
     let sock = flags.socket();
     let limit = match flags.get("limit") {
         Some(v) => Some(
@@ -191,7 +215,7 @@ fn cmd_list(args: &[String]) -> Result<u8, String> {
 }
 
 fn cmd_status(args: &[String]) -> Result<u8, String> {
-    let flags = Flags::parse(args, &["wait"])?;
+    let flags = Flags::parse(args, &["wait"], &[])?;
     let sock = flags.socket();
     let id = flags.required("id")?.to_string();
     let timeout = match flags.get("timeout") {
@@ -264,13 +288,14 @@ fn print_status(status: &Status) {
 }
 
 fn cmd_publish(args: &[String]) -> Result<u8, String> {
-    let flags = Flags::parse(args, &["dry-run"])?;
+    let flags = Flags::parse(args, &["dry-run"], &["exclude"])?;
     let sock = flags.socket();
     let opts = BuildOptions {
         repo: PathBuf::from(flags.required("repo")?),
         from: flags.required("from")?.to_string(),
         to: flags.required("to")?.to_string(),
         path_filter: flags.get("path").map(|s| s.to_string()),
+        excludes: flags.all("exclude"),
     };
 
     let mut proposal = jj::build_proposal(&opts).map_err(|e| e.to_string())?;

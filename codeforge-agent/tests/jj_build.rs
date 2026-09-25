@@ -94,6 +94,7 @@ fn opts(repo: &TempRepo, from: &str, to: &str) -> BuildOptions {
         to: to.to_string(),
         // The receiver's cwd is the repo root in these tests.
         path_filter: None,
+        excludes: Vec::new(),
     }
 }
 
@@ -312,6 +313,60 @@ fn a_path_filter_limits_the_proposal_without_prefix_matching_siblings() {
         p.files.iter().map(|f| &f.path).collect::<Vec<_>>()
     );
     assert_eq!(p.files[0].path, "pkg/one.txt");
+}
+
+#[test]
+fn excluded_prefixes_are_dropped_without_prefix_matching_siblings() {
+    // An exclusion selects a directory, but must not also drop a sibling whose
+    // name merely starts with the same characters.
+    let repo = TempRepo::new();
+    repo.write("docs/guide.md", "a\n");
+    repo.write("docsx/keep.md", "b\n");
+    repo.write("src/main.rs", "c\n");
+    let base = repo.commit("base");
+    repo.write("docs/guide.md", "A\n");
+    repo.write("docsx/keep.md", "B\n");
+    repo.write("src/main.rs", "C\n");
+    let tip = repo.commit("tip");
+
+    let mut o = opts(&repo, &base, &tip);
+    o.excludes = vec!["docs/".to_string()];
+    let p = jj::build_proposal(&o).expect("build");
+    let got: Vec<&String> = p.files.iter().map(|f| &f.path).collect();
+    assert!(
+        !got.iter().any(|p| p.starts_with("docs/")),
+        "docs/ must be dropped, got {got:?}"
+    );
+    assert!(
+        got.iter().any(|p| *p == "docsx/keep.md"),
+        "a sibling sharing the prefix must survive, got {got:?}"
+    );
+    assert!(got.iter().any(|p| *p == "src/main.rs"));
+}
+
+#[test]
+fn an_excluded_path_is_absent_from_the_proposal_entirely() {
+    // The receiver refuses a `modified` target that does not exist on its disk,
+    // and admission is all-or-nothing, so an unpublishable path must be
+    // removed here rather than failing the whole change set later.
+    let repo = TempRepo::new();
+    repo.write("PLAN.md", "doc\n");
+    repo.write("code.rs", "x\n");
+    let base = repo.commit("base");
+    repo.write("PLAN.md", "DOC\n");
+    repo.write("code.rs", "Y\n");
+    let tip = repo.commit("tip");
+
+    let mut o = opts(&repo, &base, &tip);
+    o.excludes = vec!["PLAN.md".to_string()];
+    let p = jj::build_proposal(&o).expect("build");
+    assert_eq!(
+        p.files.len(),
+        1,
+        "got {:?}",
+        p.files.iter().map(|f| &f.path).collect::<Vec<_>>()
+    );
+    assert_eq!(p.files[0].path, "code.rs");
 }
 
 #[test]
