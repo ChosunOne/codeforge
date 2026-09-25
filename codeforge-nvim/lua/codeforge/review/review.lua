@@ -825,6 +825,7 @@ end
 
 ---Keep a new file's atomic decision in sync with its sole insertion hunk.
 ---Added files have exactly one hunk.
+---@param self Review
 ---@param hunk_id string
 ---@param status string? nil = pending
 function Review:_set_hunk_status(hunk_id, status)
@@ -853,6 +854,12 @@ function Review:apply_history_state(hunk_id, status, buffer_lines, placements)
 	vim.api.nvim_buf_set_lines(self.buf, 0, -1, false, buffer_lines)
 	self._machine_tick = vim.api.nvim_buf_get_changedtick(self.buf)
 	self:_set_hunk_status(hunk_id, status)
+	local change = state.change_for_path(self.path)
+	for _, file in ipairs(change and change.files or {}) do
+		if file.path == self.path and file.status == "added" then
+			require("codeforge.review.fs").sync_added_file(change, file, file.decision, buffer_lines)
+		end
+	end
 	for _, p in ipairs(self.placements) do
 		local snap = placements and placements[p.hunk_id] or nil
 		if snap then
@@ -950,6 +957,7 @@ function Review:_accept_placement(p)
 	end
 	if not first then
 		self:_set_hunk_status(p.hunk_id, "accepted")
+		self:_sync_added_disk()
 		state.notify_change()
 		self:_record_triage(p, hist_before, buffer_before, placements_before, { status = "accepted" })
 		return true
@@ -968,9 +976,27 @@ function Review:_accept_placement(p)
 	self:_apply_region(p, first, last, res.lines)
 	self:_set_hunk_status(p.hunk_id, "accepted")
 	self:render()
+	self:_sync_added_disk()
 	state.notify_change()
 	self:_record_triage(p, hist_before, buffer_before, placements_before, { status = "accepted", region = res.lines })
 	return true
+end
+
+---Write an accepted `added` file to disk now that its region is applied.
+---@param self Review
+function Review:_sync_added_disk()
+	local change = state.change_for_path(self.path)
+	for _, file in ipairs(change and change.files or {}) do
+		if file.path == self.path and file.status == "added" then
+			local final, conflicts = self:assemble_final()
+			if conflicts and #conflicts > 0 then
+				-- Unsafe assembly: preflight/completion will refuse and report it.
+				return
+			end
+			require("codeforge.review.fs").sync_added_file(change, file, file.decision, final)
+			return
+		end
+	end
 end
 
 function Review:accept_hunk(row)

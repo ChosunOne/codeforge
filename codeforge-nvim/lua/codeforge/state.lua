@@ -699,6 +699,34 @@ function M.preflight_complete(change)
 	return true
 end
 
+---Write any accepted new file to disk before the change is logged.
+---@param change Change
+---@return nil
+local function sync_accepted_added_files(change)
+	local fs = require("codeforge.review.fs")
+	for _, file in ipairs(change.files or {}) do
+		if file.status ~= "added" or file.decision ~= "accepted" or file.created then
+			goto continue
+		end
+		local review = M.reviews[file.path]
+		local lines
+		if review then
+			local ok, final = pcall(function()
+				return review:assemble_final()
+			end)
+			if ok and type(final) == "table" then
+				lines = final
+			end
+		end
+		if not lines then
+			local buf = vim.fn.bufadd(file.path)
+			lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+		end
+		fs.sync_added_file(change, file, "accepted", lines)
+		::continue::
+	end
+end
+
 ---Complete a fully-triaged change. Refuses (returns false, logs nothing,
 ---keeps reviews and the change tracked) when any file's final assembly is
 ---unsafe.
@@ -714,6 +742,8 @@ function M.complete_change(change)
 		vim.notify("CodeForge: cannot finish: " .. msg, vim.log.levels.WARN)
 		return false
 	end
+
+	sync_accepted_added_files(change)
 
 	local entry = M.build_log_entry(change)
 	local reviews = {}

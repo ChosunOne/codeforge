@@ -32,10 +32,16 @@ end
 ---consecutive normal saves during review are allowed while an external change to
 ---disk is refused. `opts` carries the buffer options captured before the review
 ---changed them, so `detach_save_guard` can restore them.
+---
+---`creates` marks a review of a file that does not exist yet (an `added` file):
+---saving one creates its parent directories first, since a new file in a missing
+---directory otherwise fails at `:w` with E212 and the directories would have to
+---be made by hand.
 ---@param buf integer
 ---@param path string
 ---@param opts? table captured buffer options
-local function attach_save_guard(buf, path, opts)
+---@param creates? boolean this buffer is a new file
+local function attach_save_guard(buf, path, opts, creates)
 	vim.api.nvim_create_augroup("codeforge_save_guard", { clear = false })
 	local ok, existing = pcall(vim.api.nvim_get_autocmds, {
 		event = "BufWriteCmd",
@@ -61,6 +67,12 @@ local function attach_save_guard(buf, path, opts)
 			local disk_untouched = disk == nil or (snapshot ~= nil and vim.deep_equal(disk, snapshot))
 			if not disk_untouched and not vim.deep_equal(disk, lines) then
 				error("CodeForge: the file changed on disk since the review opened (use :e to inspect)", 0)
+			end
+			if creates and vim.fn.filereadable(name) == 0 then
+				local ok_dir, reason = require("codeforge.review.fs").ensure_parents(name)
+				if not ok_dir then
+					error("CodeForge: " .. (reason or "cannot create parent directories"), 0)
+				end
 			end
 			-- acwrite buffers are never written by vim's default path; do it
 			-- ourselves: drop to a normal buftype so `write!` uses the standard
@@ -259,7 +271,7 @@ function M.ensure_review(path)
 		end
 	end
 
-	attach_save_guard(buf, path, opts)
+	attach_save_guard(buf, path, opts, file.status == "added")
 
 	local base = file.base or base_from_status(file, buf)
 	local review = Review.new(path, buf, base, file.hunks or {})
@@ -306,7 +318,12 @@ function M.rearm_review(path, buf)
 	local opts = { buftype = vim.bo[buf].buftype, swapfile = vim.bo[buf].swapfile }
 	vim.bo[buf].buftype = "acwrite"
 	vim.bo[buf].swapfile = false
-	attach_save_guard(buf, path, opts)
+	local creates = false
+	local file = find_file(path)
+	if file then
+		creates = file.status == "added"
+	end
+	attach_save_guard(buf, path, opts, creates)
 end
 
 ---End reviewing `path`: restore the snapshotted buffer content and clear

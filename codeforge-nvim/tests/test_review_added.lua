@@ -77,6 +77,7 @@ for _, case in ipairs({
 	T[case.name .. " of a new-file hunk completes and undo/redo restores both levels"] = function()
 		local path = open_added({ "proposal" })
 		local buf = child.lua_get([[review.buf]])
+		local on_disk = case.status == "accepted" and 0 or 0
 		child.type_keys(case.key)
 		MiniTest.expect.equality(child.lua_get([[file.decision]]), case.status)
 		MiniTest.expect.equality(child.lua_get([[#require("codeforge.state").changes]]), 0)
@@ -85,7 +86,10 @@ for _, case in ipairs({
 		MiniTest.expect.equality(child.lua_get([[require("codeforge.state").get_review(path) == nil]]), true)
 		MiniTest.expect.equality(child.api.nvim_buf_get_lines(buf, 0, -1, false), case.final)
 		MiniTest.expect.equality(child.api.nvim_get_option_value("buftype", { buf = buf }), "")
-		MiniTest.expect.equality(child.fn.filereadable(path), 0)
+		MiniTest.expect.equality(child.fn.filereadable(path), on_disk, {
+			fail_reason = (case.status == "accepted") and "accepting a new file must create it on disk"
+				or "rejecting a new file must create nothing",
+		})
 
 		child.lua([[require("codeforge.sidebar.actions").undo()]])
 		MiniTest.expect.equality(child.lua_get([[file.decision]]), vim.NIL)
@@ -93,21 +97,27 @@ for _, case in ipairs({
 		MiniTest.expect.equality(child.lua_get([[require("codeforge.state").file_completed(file)]]), false)
 		MiniTest.expect.equality(child.lua_get([[#require("codeforge.state").changes]]), 1)
 		MiniTest.expect.equality(child.api.nvim_buf_get_lines(buf, 0, -1, false), { "proposal" })
+		MiniTest.expect.equality(child.fn.filereadable(path), 0, {
+			fail_reason = "undoing the accept must remove the created file",
+		})
 
 		child.lua([[require("codeforge.sidebar.actions").redo()]])
 		MiniTest.expect.equality(child.lua_get([[file.decision]]), case.status)
 		MiniTest.expect.equality(child.lua_get([[#require("codeforge.state").changes]]), 0)
 		MiniTest.expect.equality(child.api.nvim_buf_get_lines(buf, 0, -1, false), case.final)
-		MiniTest.expect.equality(child.fn.filereadable(path), 0)
+		MiniTest.expect.equality(child.fn.filereadable(path), on_disk, {
+			fail_reason = "redo must restore the same on-disk outcome as the original accept",
+		})
 	end
 end
 
-T["accepting a blank new-file hunk completes without creating a disk file"] = function()
+T["accepting a blank new-file hunk creates an empty file on disk"] = function()
 	local path = open_added({ "" })
 	child.type_keys("<C-x>a")
 	MiniTest.expect.equality(child.lua_get([[file.decision]]), "accepted")
 	MiniTest.expect.equality(child.lua_get([[#require("codeforge.state").changes]]), 0)
-	MiniTest.expect.equality(child.fn.filereadable(path), 0)
+	MiniTest.expect.equality(child.fn.filereadable(path), 1)
+	MiniTest.expect.equality(child.fn.getfsize(path), 0)
 end
 
 T["file-level hunk sweep updates the decision and history restoration clears it"] = function()
@@ -142,6 +152,11 @@ T["accepting a new file preserves actual pre-review unsaved content"] = function
 		{ "proposal", "unsaved user content" }
 	)
 	MiniTest.expect.equality(child.fn.filereadable(path), 0)
+	MiniTest.expect.equality(
+		child.fn.readfile(path),
+		{ "proposal", "unsaved user content" },
+		{ fail_reason = "the file must hold exactly what was reviewed" }
+	)
 end
 
 return T

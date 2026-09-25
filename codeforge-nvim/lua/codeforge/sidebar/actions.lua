@@ -91,6 +91,9 @@ local function apply_atomic_content(file, decision)
 		after_lines = baseline
 	end
 	write_buffer(path, after_lines)
+	if file.status == "added" then
+		require("codeforge.review.fs").sync_added_file(state.change_for_path(path), file, decision, after_lines)
+	end
 	return before_lines, after_lines
 end
 
@@ -288,6 +291,9 @@ local function apply_record(rec, direction)
 							write_buffer(file.path, target.buffer)
 						else
 							apply_atomic_content(file, target.decision)
+						end
+						if file.status == "added" then
+							require("codeforge.review.fs").sync_added_file(change, file, target.decision, target.buffer)
 						end
 						state.notify_change()
 						state.maybe_complete(change)
