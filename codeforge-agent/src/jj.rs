@@ -43,6 +43,34 @@ pub struct BuildOptions {
     pub excludes: Vec<String>,
 }
 
+///Apply `hunks` to `base`, returning the resulting lines.
+pub fn apply_hunks(base: &[String], hunks: &[Hunk]) -> Vec<String> {
+    let mut ordered: Vec<&Hunk> = hunks.iter().collect();
+    ordered.sort_by_key(|h| h.old_start);
+
+    let mut out: Vec<String> = Vec::new();
+    let mut cursor = 0usize; // 0-based index into `base`
+    for hunk in ordered {
+        let start = (hunk.old_start.saturating_sub(1)) as usize;
+        let start = start.min(base.len());
+        while cursor < start {
+            out.push(base[cursor].clone());
+            cursor += 1;
+        }
+        for line in &hunk.lines {
+            if let Some(rest) = line.strip_prefix('+') {
+                out.push(rest.to_string());
+            }
+        }
+        cursor = (cursor + hunk.old_lines as usize).min(base.len());
+    }
+    while cursor < base.len() {
+        out.push(base[cursor].clone());
+        cursor += 1;
+    }
+    out
+}
+
 ///Why building a proposal failed.
 #[derive(Debug)]
 pub enum BuildError {
@@ -52,6 +80,8 @@ pub enum BuildError {
     Command { args: Vec<String>, stderr: String },
     ///A path reported by jj escaped the repository.
     UnsafePath { path: String },
+    ///The derived hunks do not reproduce the target content.
+    NotReconstructible { path: String },
 }
 
 impl std::fmt::Display for BuildError {
@@ -64,6 +94,10 @@ impl std::fmt::Display for BuildError {
             BuildError::UnsafePath { path } => {
                 write!(f, "refusing to publish an unsafe path: {path}")
             }
+            BuildError::NotReconstructible { path } => write!(
+                f,
+                "the derived hunks for {path} do not reproduce the target content; refusing to publish"
+            ),
         }
     }
 }
@@ -239,48 +273,63 @@ pub fn build_proposal(opts: &BuildOptions) -> Result<Proposal, BuildError> {
         let old = show(&opts.repo, &opts.from, &path)?;
         let new = show(&opts.repo, &opts.to, &path)?;
 
-        let entry = match (old, new) {
+        match (old, new) {
             (None, None) => continue,
-            (None, Some(new)) => FileChange {
-                path,
-                status: FileStatus::Added,
-                base: None,
-                hunks: vec![Hunk {
-                    old_start: 1,
-                    old_lines: 0,
-                    new_start: 1,
-                    new_lines: new.len() as u32,
-                    lines: new.iter().map(|l| format!("+{l}")).collect(),
-                    description: None,
-                }],
-            },
-            (Some(old), None) => FileChange {
-                path,
-                status: FileStatus::Deleted,
-                base: Some(old.clone()),
-                hunks: vec![Hunk {
-                    old_start: 1,
-                    old_lines: old.len() as u32,
-                    new_start: 1,
-                    new_lines: 0,
-                    lines: old.iter().map(|l| format!("-{l}")).collect(),
-                    description: None,
-                }],
-            },
+            (None, Some(new)) => {
+                let entry = FileChange {
+                    path,
+                    status: FileStatus::Added,
+                    base: None,
+                    hunks: vec![Hunk {
+                        old_start: 1,
+                        old_lines: 0,
+                        new_start: 1,
+                        new_lines: new.len() as u32,
+                        lines: new.iter().map(|l| format!("+{l}")).collect(),
+                        description: None,
+                    }],
+                };
+                if apply_hunks(&[], &entry.hunks) != new {
+                    return Err(BuildError::NotReconstructible { path: entry.path });
+                }
+                files.push(entry);
+            }
+            (Some(old), None) => {
+                let entry = FileChange {
+                    path,
+                    status: FileStatus::Deleted,
+                    base: Some(old.clone()),
+                    hunks: vec![Hunk {
+                        old_start: 1,
+                        old_lines: old.len() as u32,
+                        new_start: 1,
+                        new_lines: 0,
+                        lines: old.iter().map(|l| format!("-{l}")).collect(),
+                        description: None,
+                    }],
+                };
+                if !apply_hunks(&old, &entry.hunks).is_empty() {
+                    return Err(BuildError::NotReconstructible { path: entry.path });
+                }
+                files.push(entry);
+            }
             (Some(old), Some(new)) => {
                 let hunks = hunks_from(&old, &new);
                 if hunks.is_empty() {
                     continue;
                 }
-                FileChange {
+                let entry = FileChange {
                     path,
                     status: FileStatus::Modified,
                     base: Some(old),
                     hunks,
+                };
+                if apply_hunks(entry.base.as_deref().unwrap_or(&[]), &entry.hunks) != new {
+                    return Err(BuildError::NotReconstructible { path: entry.path });
                 }
+                files.push(entry);
             }
-        };
-        files.push(entry);
+        }
     }
 
     Ok(Proposal { title: None, files })
@@ -348,5 +397,73 @@ mod tests {
         assert_eq!(hunks.len(), 1);
         assert_eq!(hunks[0].old_lines, 0);
         assert_eq!(hunks[0].new_lines, 2);
+    }
+
+    // ── apply_hunks: the receiver's application order ──────────────────────
+
+    fn lines(text: &str) -> Vec<String> {
+        if text.is_empty() {
+            return Vec::new();
+        }
+        text.split('\n').map(String::from).collect()
+    }
+
+    #[test]
+    fn apply_hunks_reproduces_a_range_of_edits() {
+        let cases = [
+            ("a\nb\nc", "a\nB\nc"), // substitution
+            ("a\nb", "new\na\nb"),  // insertion at the top
+            ("a\nb", "a\nb\nlast"), // insertion at the end
+            ("a\nb\n", ""),         // delete everything
+            ("", "a\nb"),           // create from empty
+            ("one\ntwo\nthree", "one\n2\n3\nfour"),
+            ("l1\nl2\nl3\nl4\nl5", "X\nl2\nl3\nl4\nY"),
+        ];
+        for (old, new) in cases {
+            let (o, n) = (lines(old), lines(new));
+            let hunks = hunks_from(&o, &n);
+            assert_eq!(
+                apply_hunks(&o, &hunks),
+                n,
+                "round trip failed for {old:?} -> {new:?} (hunks: {hunks:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn apply_hunks_is_order_independent_because_it_sorts() {
+        let base = lines("a\nb\nc\nd");
+        let new = lines("A\nb\nc\nD");
+        let mut hunks = hunks_from(&base, &new);
+        assert_eq!(hunks.len(), 2, "expected two separate edits");
+        let expected = apply_hunks(&base, &hunks);
+        hunks.reverse();
+        assert_eq!(
+            apply_hunks(&base, &hunks),
+            expected,
+            "descending hunks must apply the same way"
+        );
+    }
+
+    #[test]
+    fn apply_hunks_tolerates_a_ran_off_range_without_panicking() {
+        // A malformed probe must report rather than abort the process.
+        let base = lines("a\nb");
+        let hunks = vec![Hunk {
+            old_start: 99,
+            old_lines: 5,
+            new_start: 1,
+            new_lines: 1,
+            lines: vec!["+x".to_string()],
+            description: None,
+        }];
+        let got = apply_hunks(&base, &hunks);
+        assert!(got.contains(&"a".to_string()) && got.contains(&"x".to_string()));
+    }
+
+    #[test]
+    fn apply_hunks_with_no_hunks_returns_the_base_unchanged() {
+        let base = lines("a\nb");
+        assert_eq!(apply_hunks(&base, &[]), base);
     }
 }

@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 
 use codeforge_agent::discovery;
 use codeforge_agent::jj::{self, BuildOptions};
+use codeforge_agent::preflight;
 use codeforge_agent::socket;
 use codeforge_agent::wire::{self, ChangeList, Info, PublishReceipt, Request, Status};
 
@@ -168,6 +169,12 @@ fn parse<T: for<'de> serde::Deserialize<'de>>(frame: &[u8]) -> Result<T, String>
     wire::parse_reply(frame).map_err(|e| e.to_string())
 }
 
+///Ask the receiver where its working directory is, for containment checks.
+fn fetch_cwd(sock: &std::path::Path) -> Option<String> {
+    let reply = call(sock, &Request::Info).ok()?;
+    parse::<Info>(&reply).ok().map(|i| i.cwd)
+}
+
 fn cmd_info(args: &[String]) -> Result<u8, String> {
     let flags = Flags::parse(args, &[], &[])?;
     let sock = flags.socket();
@@ -314,10 +321,31 @@ fn cmd_publish(args: &[String]) -> Result<u8, String> {
     let request = Request::Publish { proposal };
     let body = serde_json::to_vec(&request).map_err(|e| format!("cannot encode request: {e}"))?;
 
+    let cwd = match &request {
+        Request::Publish { .. } => fetch_cwd(&sock),
+        _ => None,
+    };
+    let containment_checked = cwd.is_some();
+    let cwd_for_check = cwd.clone().unwrap_or_else(|| "/".to_string());
+    let problems = match &request {
+        Request::Publish { proposal } => preflight::check(
+            proposal,
+            &cwd_for_check,
+            body.len(),
+            socket::MAX_MESSAGE_BYTES,
+        ),
+        _ => Vec::new(),
+    };
+    if !problems.is_empty() {
+        let list: Vec<String> = problems.iter().map(|p| p.to_string()).collect();
+        return Err(format!(
+            "{} problem(s) found before sending:\n  {}",
+            list.len(),
+            list.join("\n  ")
+        ));
+    }
+
     if flags.has("dry-run") {
-        // Report what *would* be sent, and check the size cap locally, so a
-        // mistake surfaces before the editor sees anything. The byte count is
-        // re-checked here because `call_raw` is where the cap is enforced.
         let files = request_files(&request);
         eprintln!(
             "dry run: {} file(s), {} hunk(s), {} bytes (cap {})",
@@ -333,8 +361,22 @@ fn cmd_publish(args: &[String]) -> Result<u8, String> {
                 socket::MAX_MESSAGE_BYTES
             ));
         }
+        if containment_checked {
+            eprintln!("dry run: paths checked against the receiver's working directory");
+        } else {
+            eprintln!(
+                "dry run: WARNING: receiver unreachable, so paths were NOT checked \
+                 against its working directory"
+            );
+        }
         eprintln!("dry run: nothing sent");
         return Ok(EXIT_OK);
+    }
+
+    if !containment_checked {
+        eprintln!(
+            "codeforge: receiver unreachable for pre-flight; sending without local path checks"
+        );
     }
 
     let receipt: PublishReceipt = parse(&call_raw(&sock, &body)?)?;

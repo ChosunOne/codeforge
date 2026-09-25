@@ -8,5 +8,6 @@
 
 pub mod discovery;
 pub mod jj;
+pub mod preflight;
 pub mod socket;
 pub mod wire;
