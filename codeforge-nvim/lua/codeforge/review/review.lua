@@ -118,6 +118,8 @@ end
 ---@field region_mark integer? extmark id anchoring a resolved hunk's region
 ---@field region_len integer? number of buffer lines in the resolved region
 ---@field region_row integer? the resolved region's 0-indexed start row
+---@field emptied table? { anchor_row = integer }
+---@field emptied_mark integer? extmark id for the emptied anchor
 ---@field region_start integer 1-indexed start of the hunk's region in O
 ---@field region_count integer number of O lines in the hunk's region
 
@@ -244,6 +246,55 @@ end
 ---derived later via `_row_of`. Each sign is given a range spanning its
 ---line content so in-line edits keep the sign on the line and insertions
 ---above shift it down with the content.
+---
+---The 0-indexed row a pending, emptied hunk is anchored at, or nil.
+---@param self Review
+---@param p Placement
+---@return integer? row
+function Review:_emptied_row(p)
+	if not p.emptied then
+		return nil
+	end
+	local r = self:_row_of(p.emptied_mark)
+	if r ~= nil then
+		return r
+	end
+	return p.emptied.anchor_row
+end
+
+---The 0-indexed row to anchor an emptied pending hunk at: the position its
+---deleted lines occupied in the pre-edit baseline.
+---@param old_adds integer[] the hunk's baseline rows, before the reconcile
+---@param rows table<integer, integer|false> baseline row -> live row (false = deleted)
+---@param buf_lines string[]
+---@return integer row 0-indexed
+function Review:_emptied_anchor_row(old_adds, rows, buf_lines)
+	local best
+	for _, old_row in ipairs(old_adds) do
+		local mapped = rows[old_row]
+		if type(mapped) == "number" then
+			if best == nil or mapped < best then
+				best = mapped
+			end
+		elseif mapped == false then
+			for probe = old_row + 1, math.max(old_row + 1, #(self._baseline_lines or {})) do
+				local candidate = rows[probe]
+				if type(candidate) == "number" then
+					if best == nil or candidate < best then
+						best = candidate
+					end
+					break
+				end
+			end
+		end
+	end
+	if best == nil then
+		local prev = old_adds and old_adds[1]
+		best = (type(prev) == "number" and prev) or 0
+	end
+	return math.max(0, math.min(best, math.max(0, #buf_lines - 1)))
+end
+
 ---@param self Review
 function Review:render()
 	local ns = diff.namespace
@@ -253,6 +304,12 @@ function Review:render()
 			local r = self:_row_of(p.fold_mark)
 			if r ~= nil then
 				p.fold.anchor_row = r
+			end
+		end
+		if p.emptied and p.emptied_mark then
+			local r = self:_row_of(p.emptied_mark)
+			if r ~= nil then
+				p.emptied.anchor_row = r
 			end
 		end
 		for i, mark in ipairs(p.sign_marks or {}) do
@@ -295,6 +352,16 @@ function Review:render()
 			})
 			self.extmark_ids[#self.extmark_ids + 1] = id
 			p.fold_mark = id
+		end
+
+		if p.emptied then
+			local id = vim.api.nvim_buf_set_extmark(self.buf, ns, p.emptied.anchor_row, 0, {
+				end_row = p.emptied.anchor_row,
+				sign_text = "~",
+				sign_hl_group = "CodeForgeHunkEmptied",
+			})
+			self.extmark_ids[#self.extmark_ids + 1] = id
+			p.emptied_mark = id
 		end
 
 		p.sign_marks = {}
@@ -654,9 +721,10 @@ function Review:hunk_at_row(row)
 		if rstart ~= nil and row >= rstart and row < rstart + (p.region_len or 1) then
 			return p
 		end
-		-- a zero-length resolved region (e.g. a rejected insertion) keeps its
-		-- position without an extmark
 		if p.region_len == 0 and p.region_row == row then
+			return p
+		end
+		if self:_emptied_row(p) == row and p.emptied then
 			return p
 		end
 	end
@@ -677,6 +745,9 @@ function Review:_hunk_anchor(p)
 		if r ~= nil then
 			return r
 		end
+	end
+	if p.emptied then
+		return self:_emptied_row(p)
 	end
 	return self:_row_of(p.region_mark)
 end
@@ -713,6 +784,13 @@ function Review:_region_rows(p)
 	local rstart = self:_row_of(p.region_mark)
 	if rstart ~= nil then
 		return rstart, rstart + (p.region_len or 1) - 1
+	end
+	if p.emptied then
+		local r = self:_emptied_row(p)
+		if r ~= nil then
+			return r, r - 1
+		end
+		return nil, nil
 	end
 	return nil, nil
 end
@@ -816,6 +894,7 @@ function Review:_snapshot_placements()
 			kinds = p.kinds and vim.deepcopy(p.kinds) or nil,
 			add_contents = p.add_contents and vim.deepcopy(p.add_contents) or nil,
 			fold = p.fold and vim.deepcopy(p.fold) or nil,
+			emptied = p.emptied and vim.deepcopy(p.emptied) or nil,
 			region_len = p.region_len,
 			region_row = p.region_row,
 		}
@@ -867,10 +946,12 @@ function Review:apply_history_state(hunk_id, status, buffer_lines, placements)
 			p.kinds = snap.kinds
 			p.add_contents = snap.add_contents
 			p.fold = snap.fold
+			p.emptied = snap.emptied
 			p.region_len = snap.region_len
 			p.region_row = snap.region_row
 			p.region_mark = (snap.region_len and snap.region_len > 0) and true or nil
 			p.fold_mark = nil
+			p.emptied_mark = nil
 			p.sign_marks = {}
 		end
 	end
@@ -1563,6 +1644,7 @@ function Review:_reconcile()
 	for _, p in ipairs(self.placements) do
 		local st = self.hunk_status[p.hunk_id]
 		if st ~= "accepted" and st ~= "rejected" and p.sign_marks then
+			local old_adds = vim.deepcopy(p.adds or {})
 			local kept_adds, kept_kinds, kept_contents, kept_marks = {}, {}, {}, {}
 			for i, mark in ipairs(p.sign_marks) do
 				local expected = p.add_contents and p.add_contents[i]
@@ -1605,6 +1687,17 @@ function Review:_reconcile()
 			p.kinds = kept_kinds
 			p.add_contents = kept_contents
 			p.sign_marks = kept_marks
+
+			local has_lines = #kept_adds > 0 or p.fold ~= nil
+			if has_lines then
+				if p.emptied then
+					p.emptied, p.emptied_mark = nil, nil
+					changed = true
+				end
+			elseif not p.emptied then
+				p.emptied = { anchor_row = self:_emptied_anchor_row(old_adds, rows, buf_lines) }
+				changed = true
+			end
 		end
 	end
 	local popup = require("codeforge.review.popup")

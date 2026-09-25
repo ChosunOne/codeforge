@@ -18,6 +18,7 @@ function M.setup()
 	link("CodeForgeHunkAdded", "GitSignsAdd", "DiffAdd")
 	link("CodeForgeHunkModified", "GitSignsChange", "DiffChange")
 	link("CodeForgeHunkDeleted", "GitSignsDelete", "DiffDelete")
+	link("CodeForgeHunkEmptied", "CodeForgeHunkDeleted", "DiffDelete")
 
 	link("CodeForgeReviewAccepted", "GitSignsAdd", "DiffAdd")
 	link("CodeForgeReviewRejected", "GitSignsDelete", "DiffDelete")

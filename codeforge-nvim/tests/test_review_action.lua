@@ -465,7 +465,7 @@ T["a free-form edit above a hunk moves that hunk's sign (no action involved)"] =
 	)
 end
 
-T["deleting a hunk's line drops its sign (the hunk is no longer locatable there)"] = function()
+T["deleting a hunk's line keeps it triageable at the deletion boundary"] = function()
 	local O = { "a", "b", "c", "d", "e" }
 	local path = F.tmp_path()
 	child.fn.writefile(O, path)
@@ -487,23 +487,21 @@ T["deleting a hunk's line drops its sign (the hunk is no longer locatable there)
 	child.api.nvim_exec_autocmds("TextChanged", { buffer = buf })
 	child.lua([[vim.wait(300)]])
 
-	local signs = child.lua_get(
-		string.format(
-			[[#vim.tbl_filter(function(m) return m[4] and m[4].sign_text end, vim.api.nvim_buf_get_extmarks(%d, %d, 0, -1, {}))]],
-			buf,
-			n
-		)
+	local marker = Q.sign_at(buf, n, 2)
+	MiniTest.expect.equality(marker ~= nil, true, {
+		fail_reason = "an emptied hunk must keep a visible marker at its boundary row",
+	})
+	MiniTest.expect.equality(
+		marker.sign_hl_group,
+		"CodeForgeHunkEmptied",
+		{ fail_reason = "the marker must be styled as an emptied hunk, got " .. vim.inspect(marker.sign_hl_group) }
 	)
-	MiniTest.expect.equality(signs, 0, { fail_reason = "no hunk sign should remain after its line was deleted" })
 	MiniTest.expect.equality(
 		child.lua_get(
-			string.format(
-				[[(require("codeforge.state").get_review(%s)):hunk_row("hunk-add") == nil]],
-				vim.inspect(path)
-			)
+			string.format([[require("codeforge.state").get_review(%s):hunk_row("hunk-add")]], vim.inspect(path))
 		),
-		true,
-		{ fail_reason = "hunk_row should be nil once the hunk's only line is deleted" }
+		3,
+		{ fail_reason = "hunk_row must resolve the emptied hunk (1-indexed row 3)" }
 	)
 end
 

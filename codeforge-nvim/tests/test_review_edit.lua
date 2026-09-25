@@ -86,14 +86,10 @@ T["editing a modified line keeps the hunk pending and accept works"] = function(
 		fail_reason = "accept_hunk on an edited hunk must resolve it as accepted",
 	})
 	-- The user's edit is preserved in the buffer.
-	MiniTest.expect.equality(
-		vim.tbl_contains(child.api.nvim_buf_get_lines(buf, 0, -1, false), "B edited"),
-		true,
-		{
-			fail_reason = "the amended line must survive acceptance, got "
-				.. vim.inspect(child.api.nvim_buf_get_lines(buf, 0, -1, false)),
-		}
-	)
+	MiniTest.expect.equality(vim.tbl_contains(child.api.nvim_buf_get_lines(buf, 0, -1, false), "B edited"), true, {
+		fail_reason = "the amended line must survive acceptance, got "
+			.. vim.inspect(child.api.nvim_buf_get_lines(buf, 0, -1, false)),
+	})
 end
 
 T["editing a modified line keeps the hunk pending and reject works"] = function()
@@ -277,7 +273,7 @@ T["a multi-line hunk survives editing one line and deleting another"] = function
 	})
 end
 
-T["clearing the hunk's only line does not resurrect it as an amendment"] = function()
+T["clearing a hunk's lines leaves it triageable at the deletion boundary"] = function()
 	local O = { "a", "b", "c" }
 	local path = F.tmp_path()
 	child.fn.writefile(O, path)
@@ -288,10 +284,115 @@ T["clearing the hunk's only line does not resurrect it as an amendment"] = funct
 	child.api.nvim_buf_set_lines(buf, 1, 2, false, {})
 	child.lua([[vim.wait(400)]])
 
-	-- A pure deletion of the hunk's only line is not an amendment: the hunk must
-	-- NOT be reported as reachable via a bogus row.
-	MiniTest.expect.equality(hunk_reachable(path, "h1"), false, {
-		fail_reason = "deleting the only line must not leave a phantom reachable row",
+	MiniTest.expect.equality(hunk_reachable(path, "h1"), true, {
+		fail_reason = "a fully emptied hunk must stay locatable so it can still be triaged",
+	})
+	local adds = child.lua_get(
+		string.format([[require("codeforge.state").get_review(%s).placements[1].adds]], vim.inspect(path))
+	)
+	MiniTest.expect.equality(adds, {}, {
+		fail_reason = "an emptied hunk must have no added lines, got " .. vim.inspect(adds),
+	})
+end
+
+T["accepting a fully emptied hunk keeps the deletion and resolves it"] = function()
+	local O = { "a", "b", "c" }
+	local path = F.tmp_path()
+	child.fn.writefile(O, path)
+	child.cmd("edit " .. path)
+	F.seed_change(path, O, { F.replace_hunk("h1", 2, "b", "B") })
+
+	local buf = open_review(path)
+	child.api.nvim_buf_set_lines(buf, 1, 2, false, {})
+	child.lua([[vim.wait(400)]])
+
+	-- Accept by the hunk's own anchor row, exactly as the :hunk_at_row dispatch does.
+	child.lua(string.format(
+		[[
+                local r = require("codeforge.state").get_review(%s)
+                r:accept_hunk(r:hunk_row("h1") - 1)
+        ]],
+		vim.inspect(path)
+	))
+
+	MiniTest.expect.equality(F.hunk_outcome(path, "h1"), "accepted", {
+		fail_reason = "accepting an emptied hunk must resolve it, not silently no-op",
+	})
+	MiniTest.expect.equality(child.api.nvim_buf_get_lines(buf, 0, -1, false), { "a", "c" }, {
+		fail_reason = "accepting keeps the user's deletion of the hunk's lines",
+	})
+end
+
+T["rejecting a fully emptied hunk restores the pre-review text"] = function()
+	local O = { "a", "b", "c" }
+	local path = F.tmp_path()
+	child.fn.writefile(O, path)
+	child.cmd("edit " .. path)
+	F.seed_change(path, O, { F.replace_hunk("h1", 2, "b", "B") })
+
+	local buf = open_review(path)
+	child.api.nvim_buf_set_lines(buf, 1, 2, false, {})
+	child.lua([[vim.wait(400)]])
+
+	child.lua(string.format(
+		[[
+                local r = require("codeforge.state").get_review(%s)
+                r:reject_hunk(r:hunk_row("h1") - 1)
+        ]],
+		vim.inspect(path)
+	))
+
+	MiniTest.expect.equality(F.hunk_outcome(path, "h1"), "rejected", {
+		fail_reason = "rejecting an emptied hunk must resolve it as rejected",
+	})
+	MiniTest.expect.equality(child.api.nvim_buf_get_lines(buf, 0, -1, false), { "a", "b", "c" }, {
+		fail_reason = "rejecting restores the pre-review text for the region",
+	})
+end
+
+T["a fully emptied inserted hunk stays triageable"] = function()
+	-- A pure insertion has no deletion fold either, so clearing its only line
+	-- orphaned it the same way the replace case was orphaned.
+	local O = { "a", "b" }
+	local path = F.tmp_path()
+	child.fn.writefile(O, path)
+	child.cmd("edit " .. path)
+	F.seed_change(path, O, { F.insert_hunk("h-add", 2, { "Z" }) })
+
+	local buf = open_review(path)
+	child.api.nvim_buf_set_lines(buf, 1, 2, false, {})
+	child.lua([[vim.wait(400)]])
+
+	MiniTest.expect.equality(hunk_reachable(path, "h-add"), true, {
+		fail_reason = "an emptied insertion must stay locatable",
+	})
+	child.lua(string.format(
+		[[
+                local r = require("codeforge.state").get_review(%s)
+                r:reject_hunk(r:hunk_row("h-add") - 1)
+        ]],
+		vim.inspect(path)
+	))
+	MiniTest.expect.equality(F.hunk_outcome(path, "h-add"), "rejected", {
+		fail_reason = "the emptied insertion must be rejectable",
+	})
+end
+
+T["next_hunk reaches a fully emptied hunk"] = function()
+	local O = { "a", "b", "c" }
+	local path = F.tmp_path()
+	child.fn.writefile(O, path)
+	child.cmd("edit " .. path)
+	F.seed_change(path, O, { F.replace_hunk("h1", 2, "b", "B") })
+
+	local buf = open_review(path)
+	child.api.nvim_buf_set_lines(buf, 1, 2, false, {})
+	child.lua([[vim.wait(400)]])
+
+	child.api.nvim_win_set_cursor(0, { 1, 0 })
+	child.lua(string.format([[require("codeforge.state").get_review(%s):next_hunk()]], vim.inspect(path)))
+	MiniTest.expect.equality(child.api.nvim_win_get_cursor(0)[1], 2, {
+		fail_reason = "next_hunk must land on the emptied hunk's boundary row",
 	})
 end
 
